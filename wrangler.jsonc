@@ -8,8 +8,7 @@
 	"main": "src/index.js",
 	"compatibility_date": "2026-11-18",
 	"assets": {
-		// The path to the directory containing the `index.html` file to be served at `/`
-		"directory": "./public"
+		"directory": "./og_static_files"
 	},
 	"durable_objects": {
 		"bindings": [

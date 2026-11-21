@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#17251f">
+    <meta name="description" content="Play 3 to 14 locally or online with friends.">
+    <title>3 to 14 — Card Game</title>
+    <link rel="icon" type="image/svg+xml" href="Images/spade.svg">
+    <link rel="stylesheet" href="3to14.css">
+    <script type="module" src="3to14.js"></script>
+</head>
+<body>
+    <header id="infoDiv" role="status" aria-live="polite">Welcome to 3 to 14</header>
+    <main>
+        <section id="startDiv">
+            <div class="mode-switch" role="group" aria-label="Game mode">
+                <button class="mode-button active" type="button" data-mode="local" aria-pressed="true">Local</button>
+                <button class="mode-button" type="button" data-mode="online" aria-pressed="false">Online</button>
+            </div>
+            <div id="localSetup" class="setup-panel">
+                <h1>Play locally</h1>
+                <p>Pass-and-play on this device, or play a solo run.</p>
+                <label class="field-label" for="playerCount">Players</label>
+                <input id="playerCount" type="number" min="1" max="20" step="1" value="1">
+                <div id="playerNames"></div>
+                <label class="check-row" for="twosWild">
+                    <input id="twosWild" type="checkbox">
+                    <span>Make 2s wild for this game</span>
+                </label>
+                <button id="startLocal" type="button">Start local game</button>
+            </div>
+            <div id="onlineSetup" class="setup-panel" hidden>
+                <h1>Play online</h1>
+                <p>Create a room or join a friend's room code.</p>
+                <label class="field-label" for="onlineName">Your name</label>
+                <input id="onlineName" type="text" maxlength="20" autocomplete="nickname" value="">
+                <div class="online-actions">
+                    <button id="createRoom" type="button">Create room</button>
+                    <span class="online-or">or</span>
+                    <div class="join-row">
+                        <label class="sr-only" for="roomCodeInput">Room code</label>
+                        <input id="roomCodeInput" type="text" maxlength="8" placeholder="8-character code" autocomplete="off">
+                        <button id="joinRoom" type="button">Join</button>
+                    </div>
+                </div>
+            </div>
+            <div id="roomLobby" class="setup-panel" hidden>
+                <h2>Room <span id="roomCode"></span></h2>
+                <p>Share this code with the other players.</p>
+                <ul id="lobbyPlayers"></ul>
+                <p id="lobbyStatus" role="status"></p>
+                <label id="onlineTwosWildOption" class="check-row" for="onlineTwosWild">
+                    <input id="onlineTwosWild" type="checkbox">
+                    <span>Make 2s wild for this game</span>
+                </label>
+                <div class="lobby-actions">
+                    <button id="copyRoomLink" class="secondary-button" type="button">Copy invite link</button>
+                    <button id="startRoom" type="button" hidden>Start game</button>
+                    <button id="leaveRoom" class="secondary-button" type="button">Leave room</button>
+                </div>
+            </div>
+            <section id="leaderboards" aria-label="Single-player best scores">
+                <div class="leaderboard-filter">
+                    <span id="leaderboardFilterLabel">Show scores:</span>
+                    <label class="wild-score-toggle" aria-labelledby="leaderboardFilterLabel wildScoreNotWild wildScoreWild">
+                        <span id="wildScoreNotWild">2s not wild</span>
+                        <input id="leaderboardWildFilter" type="checkbox" role="switch">
+                        <span class="wild-score-slider" aria-hidden="true"></span>
+                        <span id="wildScoreWild">2s wild</span>
+                    </label>
+                </div>
+                <div class="leaderboard-column">
+                    <h2>Global solo top 10</h2>
+                    <p>Best scores, turns, and times for the selected rule setting.</p>
+                    <ol id="globalScores"><li>Loading scores…</li></ol>
+                </div>
+                <div class="leaderboard-column">
+                    <h2>This device solo top 10</h2>
+                    <p>Your local best scores for the selected rule setting.</p>
+                    <ol id="localScores"></ol>
+                </div>
+            </section>
+            <section id="quotes" aria-label="Game quotes">
+                <blockquote>"Oh, you sweet little thing, you!"</blockquote>
+                <blockquote>"You can't play this game without wild cards."</blockquote>
+                <blockquote>"That card will gut shot the farm."</blockquote>
+                <blockquote>"Ya giraffe neck!"</blockquote>
+                <blockquote>"You dirty, rotten, good-for-nothing, garbage can basketball!"</blockquote>
+                <blockquote>and many more...</blockquote>
+                
+            </section>
+            <p>In loving memory of</p>
+                <cite>Raymond Mecham</cite>
+        </section>
+
+        <section id="gameBoard" hidden>
+            <div class="game-toolbar">
+                <div>
+                    <strong id="roundLabel">Round 3</strong>
+                    <span id="wildLabel"></span>
+                    <span id="soloTimer" class="solo-timer" hidden></span>
+                </div>
+                <div class="toolbar-actions">
+                    <button id="showScores" class="secondary-button" type="button">Scores</button>
+                    <button id="showHowToPlay" class="secondary-button" type="button">How to play</button>
+                    <button id="returnMenu" class="secondary-button" type="button">End game</button>
+                    <button id="leaveOnline" class="secondary-button" type="button" hidden>Leave room</button>
+                </div>
+            </div>
+            <div id="onlinePlayers" class="online-players" hidden></div>
+            <div id="onlineChatBubble" class="online-chat-bubble" role="status" hidden></div>
+            <form id="onlineChatControls" class="online-chat-controls" hidden>
+                <label class="sr-only" for="chatQuote">Choose a quote</label>
+                <select id="chatQuote"></select>
+                <button type="submit">Say it!</button>
+            </form>
+            <div id="lastTurnBanner" class="last-turn-banner" role="status" aria-live="polite" hidden></div>
+            <div class="table-area">
+                <div id="deckDiv">
+                    <h3>Deck <span id="deckCount"></span></h3>
+                    <button id="deckTarget" class="pile-target" type="button" aria-label="Draw from deck"></button>
+                </div>
+                <div id="discardDiv">
+                    <h3>Discard pile</h3>
+                    <button id="discardTarget" class="pile-target" type="button" aria-label="Draw from discard pile or discard selected card"></button>
+                </div>
+            </div>
+            <section id="handDiv" aria-label="Your hand">
+                <h2 id="handHeading">Your cards</h2>
+                <div id="handCards" class="hand-cards"></div>
+            </section>
+            <div id="turnActions"></div>
+        </section>
+
+        <section id="scoreBoard" hidden>
+            <div class="score-heading">
+                <h2>Score board</h2>
+                <button id="closeScores" class="secondary-button" type="button">Close</button>
+            </div>
+            <p id="soloPauseNote" hidden>The solo run timer is paused while this scoreboard is open.</p>
+            <div id="winnerCelebration" class="winner-celebration" hidden></div>
+            <div id="scoreTable"></div>
+            <div id="roundHistory"></div>
+            <button id="playAgain" type="button" hidden>Play again</button>
+        </section>
+        <p id="notice" role="alert" hidden></p>
+    </main>
+
+    <dialog id="howToPlayDialog" aria-labelledby="howToPlayTitle">
+        <div class="score-heading">
+            <h2 id="howToPlayTitle">How to play 3 to 14</h2>
+            <button id="closeHowToPlay" class="secondary-button" type="button">Close</button>
+        </div>
+        <div class="how-to-play-content">
+            <h3>Goal</h3>
+            <p>Complete each round's goal by laying down every card in your hand as valid sets and/or runs. The goals grow from 3 cards in round 3 to 14 cards in round 14.</p>
+            <h3>Turn and meld rules</h3>
+            <ul>
+                <li>On your turn, draw one card from the deck or the top of the discard pile, then discard one card to end your turn.</li>
+                <li>A set has at least three cards of the same rank. A run has at least three consecutive ranks in the same suit.</li>
+                <li>Your whole hand must be covered by sets and/or runs before you can lay down. Cards cannot be used in more than one meld.</li>
+                <li>Jokers and cards matching the round number are wild. Aces can be low or high in a run, but runs do not wrap around. 2s are wild only when enabled for the game.</li>
+                <li>In multiplayer, after someone lays down, each other player who has not laid down gets one final turn. At round end, cards that fit into non-overlapping sets or runs score no points; the game finds the grouping that leaves the fewest points among unmatched cards.</li>
+            </ul>
+            <h3>Card points</h3>
+            <table class="points-table">
+                <thead><tr><th>Unmatched card</th><th>Points</th></tr></thead>
+                <tbody>
+                    <tr><td>2–9</td><td>5</td></tr>
+                    <tr><td>10, Jack, Queen, King</td><td>10</td></tr>
+                    <tr><td>Ace</td><td>15</td></tr>
+                    <tr><td>Joker or wild card (including the round rank and optional wild 2s)</td><td>25</td></tr>
+                    <tr><td>Card in a valid set or run</td><td>0</td></tr>
+                </tbody>
+            </table>
+            <h3>Tips</h3>
+            <ul>
+                <li>Keep cards that can complete more than one possible set or run, and watch which ranks and suits are being discarded.</li>
+                <li>Wild cards are flexible; save them for a gap or a difficult-to-complete meld when you can.</li>
+                <li>Before laying down, check that every card in your hand fits into a meld.</li>
+            </ul>
+            <h3>How to win</h3>
+            <p>In multiplayer, avoid points from cards left in your hand when a round ends. The player with the lowest total score after round 14 wins. In solo play, lay down in every round. The run timer starts with your first draw, pauses while the score board is open, and stops after laying down in round 14. Your score is max(0, 100000 − 1000 × turns − elapsed seconds), so a higher score is better. Leaderboards separate games with 2s wild from games without them.</p>
+        </div>
+    </dialog>
+
+    <dialog id="turnDialog" aria-labelledby="turnDialogTitle">
+        <div class="turn-dialog-content">
+            <h2 id="turnDialogTitle">It's your turn!</h2>
+            <p>Ready to draw a card?</p>
+            <button id="turnDialogPlay" type="button">Play!</button>
+        </div>
+    </dialog>
+
+    <dialog id="decisionDialog" aria-labelledby="decisionTitle" aria-describedby="decisionMessage layDownHint">
+        <h2 id="decisionTitle"></h2>
+        <p id="decisionMessage"></p>
+        <p id="layDownHint" role="status"></p>
+        <label id="layDownOption" class="check-row" for="layDownCheckbox" hidden>
+            <input id="layDownCheckbox" type="checkbox">
+            <span>Lay down after discarding</span>
+        </label>
+        <div id="skipPasswordOption" class="skip-password-field" hidden>
+            <label for="skipPassword">Testing password</label>
+            <input id="skipPassword" type="password" autocomplete="off" spellcheck="false">
+            <small>Enter the exact ROUND_SKIP_PASSWORD configured for this Worker.</small>
+            <label for="skipTargetRound">Skip to round</label>
+            <input id="skipTargetRound" type="number" min="4" max="14" step="1">
+        </div>
+        <div class="dialog-actions">
+            <button id="decisionDeny" class="secondary-button" type="button">Cancel</button>
+            <button id="decisionAccept" type="button">Continue</button>
+        </div>
+    </dialog>
+</body>
+</html>
