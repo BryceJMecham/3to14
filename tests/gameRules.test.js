@@ -236,7 +236,7 @@ test("solo runs total the turns spent across completed rounds", () => {
 });
 
 test("solo score rewards fewer turns and faster completion", () => {
-	assert.equal(soloRunScore(20, 300), 79700);
+	assert.equal(soloRunScore(20, 300), 150000);
 	assert.ok(soloRunScore(19, 300) > soloRunScore(20, 300));
 	assert.ok(soloRunScore(20, 299) > soloRunScore(20, 300));
 	assert.equal(soloRunScore(200, 5000), 0);
@@ -352,7 +352,7 @@ test("a completed solo run records first-draw time, total turns, and a high scor
 	assert.equal(game.status, "complete");
 	assert.equal(game.soloTotalTurns, 21);
 	assert.equal(game.soloElapsedSeconds, 6);
-	assert.equal(player.score, 78994);
+	assert.equal(player.score, 178400);
 	assert.deepEqual(game.winners, ["solo"]);
 });
 

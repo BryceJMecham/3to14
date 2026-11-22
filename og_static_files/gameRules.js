@@ -16,7 +16,7 @@ export function soloRunScore(totalTurns, elapsedSeconds){
         !Number.isSafeInteger(elapsedSeconds) || elapsedSeconds < 0){
         throw new RangeError("Solo run turns and elapsed time must be non-negative integers.");
     }
-    return Math.max(0, 100000 - totalTurns * 1000 - elapsedSeconds);
+    return Math.max(0, 200000 - totalTurns * 1000 - elapsedSeconds * 100);
 }
 
 export function getSoloRunElapsedSeconds(game, now = Date.now()){

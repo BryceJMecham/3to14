@@ -15,6 +15,25 @@ const ROOM_CODE_CHARACTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_LENGTH = 8;
 const ROOM_IDLE_MS = 24 * 60 * 60 * 1000;
 
+function recalculateLeaderboardScores(entries){
+	const scores = (Array.isArray(entries) ? entries : [])
+		.filter(entry => typeof entry?.useTwosWild === "boolean")
+		.map(entry => Number.isSafeInteger(entry.turns) && entry.turns >= 0 &&
+			Number.isSafeInteger(entry.elapsedSeconds) && entry.elapsedSeconds >= 0
+			? { ...entry, score: soloRunScore(entry.turns, entry.elapsedSeconds) }
+			: entry)
+		.sort((first, second) => second.score - first.score ||
+			(first.elapsedSeconds ?? Number.MAX_SAFE_INTEGER) -
+				(second.elapsedSeconds ?? Number.MAX_SAFE_INTEGER) ||
+			(first.turns ?? Number.MAX_SAFE_INTEGER) -
+				(second.turns ?? Number.MAX_SAFE_INTEGER) ||
+			(first.submittedAt || "").localeCompare(second.submittedAt || ""));
+	return [
+		...scores.filter(entry => entry.useTwosWild === false).slice(0, 10),
+		...scores.filter(entry => entry.useTwosWild === true).slice(0, 10)
+	];
+}
+
 function jsonResponse(data, status = 200){
 	return Response.json(data, {
 		status,
@@ -469,10 +488,10 @@ export class MyDurableObject extends DurableObject {
 
 	async leaderboard(request){
 		if(request.method === "GET"){
-			const storedScores = await this.ctx.storage.get("scores") || [];
-			const scores = storedScores.filter(entry =>
-				typeof entry.useTwosWild === "boolean"
+			const scores = recalculateLeaderboardScores(
+				await this.ctx.storage.get("scores")
 			);
+			await this.ctx.storage.put("scores", scores);
 			return jsonResponse({ scores });
 		}
 		if(request.method !== "POST"){
@@ -494,7 +513,9 @@ export class MyDurableObject extends DurableObject {
 			score !== soloRunScore(turns, elapsedSeconds)){
 			return jsonResponse({ error: "Enter a name and a valid completed solo result." }, 400);
 		}
-		const scores = await this.ctx.storage.get("scores") || [];
+		const scores = recalculateLeaderboardScores(
+			await this.ctx.storage.get("scores")
+		);
 		scores.push({
 			name,
 			score,
@@ -503,16 +524,7 @@ export class MyDurableObject extends DurableObject {
 			useTwosWild,
 			submittedAt: new Date().toISOString()
 		});
-		scores.sort((first, second) => second.score - first.score ||
-			(first.elapsedSeconds ?? Number.MAX_SAFE_INTEGER) -
-				(second.elapsedSeconds ?? Number.MAX_SAFE_INTEGER) ||
-			(first.turns ?? Number.MAX_SAFE_INTEGER) - (second.turns ?? Number.MAX_SAFE_INTEGER) ||
-			first.submittedAt.localeCompare(second.submittedAt));
-		const bestScores = [
-			...scores.filter(entry => entry.useTwosWild === false).slice(0, 10),
-			...scores.filter(entry => entry.useTwosWild === true).slice(0, 10),
-			...scores.filter(entry => typeof entry.useTwosWild !== "boolean").slice(0, 10)
-		];
+		const bestScores = recalculateLeaderboardScores(scores);
 		await this.ctx.storage.put("scores", bestScores);
 		return jsonResponse({ scores: bestScores }, 201);
 	}

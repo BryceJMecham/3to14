@@ -10,6 +10,7 @@ findAdjacentMeldGroups,
 getSoloRunElapsedSeconds,
 isWild,
 LAST_ROUND,
+soloRunScore,
 skipRound
 } from "./gameRules.js";
 
@@ -304,10 +305,31 @@ function renderPlayerNames(){
 function readLocalScores(){
 	try{
 		const saved = localStorage.getItem(localScoreKey);
-		const scores = saved ? JSON.parse(saved) : [];
-		return Array.isArray(scores)
-			? scores.filter(entry => typeof entry?.useTwosWild === "boolean").slice(0, 20)
-			: [];
+		const storedScores = saved ? JSON.parse(saved) : [];
+		if(!Array.isArray(storedScores)){
+			return [];
+		}
+		const scores = storedScores
+			.filter(entry => typeof entry?.useTwosWild === "boolean")
+			.map(entry => Number.isSafeInteger(entry.turns) && entry.turns >= 0 &&
+				Number.isSafeInteger(entry.elapsedSeconds) && entry.elapsedSeconds >= 0
+				? { ...entry, score: soloRunScore(entry.turns, entry.elapsedSeconds) }
+				: entry)
+			.sort((first, second) => second.score - first.score ||
+				(first.elapsedSeconds ?? Number.MAX_SAFE_INTEGER) -
+					(second.elapsedSeconds ?? Number.MAX_SAFE_INTEGER) ||
+				(first.turns ?? Number.MAX_SAFE_INTEGER) -
+					(second.turns ?? Number.MAX_SAFE_INTEGER));
+		const retained = [
+			...scores.filter(entry => entry.useTwosWild === false).slice(0, 10),
+			...scores.filter(entry => entry.useTwosWild === true).slice(0, 10)
+		];
+		try{
+			localStorage.setItem(localScoreKey, JSON.stringify(retained));
+		}catch(error){
+			showNotice("Saved solo scores could not be updated with the current scoring formula.");
+		}
+		return retained;
 	}catch(error){
 		showNotice("Could not load this device's saved scores.");
 		return [];
