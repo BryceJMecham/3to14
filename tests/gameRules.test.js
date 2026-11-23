@@ -3,12 +3,14 @@ import test from "node:test";
 import {
 	canLayDown,
 	cardPoints,
+	chooseBotMove,
 	createGame,
 	discardAndEndTurn,
 	drawCard,
 	findAdjacentMeldGroups,
 	getSoloRunElapsedSeconds,
 	removePlayerFromGame,
+	playBotTurn,
 	skipRound,
 	soloRunScore,
 	unmeldedCardPoints
@@ -17,6 +19,61 @@ import {
 function card(id, rank, suit = "hearts"){
 	return { id, rank, suit };
 }
+
+test("bots use only their own hand and make a valid draw and discard", () => {
+	const game = createGame([
+		{ id: "human", name: "Human" },
+		{ id: "bot", name: "Raymond", isBot: true, botSkill: "extreme" }
+	]);
+	game.currentIndex = 1;
+	game.players[1].hand = [
+		card("bot-low", 2, "hearts"),
+		card("bot-mid", 8, "clubs"),
+		card("bot-high", 13, "spades")
+	];
+	const humanHand = JSON.stringify(game.players[0].hand);
+
+	const drawChoice = chooseBotMove(game, "bot");
+	assert.ok(["deck", "discard"].includes(drawChoice.source));
+	assert.equal(JSON.stringify(game.players[0].hand), humanHand);
+	playBotTurn(game, "bot");
+
+	assert.equal(game.players[0].turnsThisRound, 0);
+	assert.equal(game.players[1].turnsThisRound, 1);
+	assert.equal(game.players[1].hand.length, game.round);
+	assert.equal(game.hasDrawn, false);
+	assert.equal(game.players[0].id, game.players[game.currentIndex].id);
+});
+
+test("extreme bots avoid an unusable wild card on their final turn", () => {
+	const game = createGame([
+		{ id: "human", name: "Human" },
+		{ id: "bot", name: "Raymond", isBot: true, botSkill: "extreme" }
+	]);
+	game.currentIndex = 1;
+	game.round = 9;
+	game.finalTurnsRemaining = 1;
+	game.players[1].hand = [
+		card("bot-three", 3, "hearts"),
+		card("bot-five", 5, "clubs"),
+		card("bot-seven", 7, "spades")
+	];
+	game.discardPile = [card("discard-wild", 9, "hearts")];
+
+	assert.equal(chooseBotMove(game, "bot").source, "deck");
+
+	game.hasDrawn = true;
+	game.players[1].hand.push(card("drawn-wild", 9, "clubs"));
+	assert.equal(chooseBotMove(game, "bot").discardCardId, "drawn-wild");
+});
+
+test("games allow only one extreme bot", () => {
+	assert.throws(() => createGame([
+		{ id: "human", name: "Human" },
+		{ id: "bot-1", name: "Raymond", isBot: true, botSkill: "extreme" },
+		{ id: "bot-2", name: "Aang", isBot: true, botSkill: "extreme" }
+	]), /only one extreme bot/i);
+});
 
 test("the game uses only the decks needed to deal round 14", () => {
 	for(const playerCount of [1, 2, 3, 4, 8, 20]){
@@ -236,10 +293,10 @@ test("solo runs total the turns spent across completed rounds", () => {
 });
 
 test("solo score rewards fewer turns and faster completion", () => {
-	assert.equal(soloRunScore(20, 300), 150000);
+	assert.equal(soloRunScore(20, 300), 9500);
 	assert.ok(soloRunScore(19, 300) > soloRunScore(20, 300));
 	assert.ok(soloRunScore(20, 299) > soloRunScore(20, 300));
-	assert.equal(soloRunScore(200, 5000), 0);
+	assert.equal(soloRunScore(200, 5000), 3000);
 });
 
 test("solo run time excludes time spent with the scoreboard open", () => {
@@ -352,7 +409,7 @@ test("a completed solo run records first-draw time, total turns, and a high scor
 	assert.equal(game.status, "complete");
 	assert.equal(game.soloTotalTurns, 21);
 	assert.equal(game.soloElapsedSeconds, 6);
-	assert.equal(player.score, 178400);
+	assert.equal(player.score, 9784);
 	assert.deepEqual(game.winners, ["solo"]);
 });
 

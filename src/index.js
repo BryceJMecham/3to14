@@ -5,6 +5,9 @@ import {
 	discardAndEndTurn,
 	drawCard,
 	CHAT_QUOTES,
+	MAX_BOTS,
+	MAX_PLAYERS,
+	playBotTurn,
 	randomInteger,
 	removePlayerFromGame,
 	skipRound,
@@ -224,6 +227,7 @@ export class MyDurableObject extends DurableObject {
 			status: "waiting",
 			useTwosWild: false,
 			players: [host],
+			bots: [],
 			game: null,
 			lastActivity: Date.now(),
 		};
@@ -243,7 +247,7 @@ export class MyDurableObject extends DurableObject {
 		if(this.room.status !== "waiting"){
 			return jsonResponse({ error: "This room has already started." }, 409);
 		}
-		if(this.room.players.length >= 20){
+		if(this.room.players.length + (this.room.bots || []).length >= MAX_PLAYERS){
 			return jsonResponse({ error: "This room is full." }, 409);
 		}
 		const body = await readJson(request);
@@ -254,7 +258,8 @@ export class MyDurableObject extends DurableObject {
 		if(!name){
 			return jsonResponse({ error: "Enter a name between 1 and 20 characters." }, 400);
 		}
-		if(this.room.players.some(player => player.name.toLocaleLowerCase() === name.toLocaleLowerCase())){
+		if(this.room.players.some(player => player.name.toLocaleLowerCase() === name.toLocaleLowerCase()) ||
+			(this.room.bots || []).some(bot => bot.name.toLocaleLowerCase() === name.toLocaleLowerCase())){
 			return jsonResponse({ error: "That name is already in use in this room." }, 409);
 		}
 		const player = { id: createToken(12), token: createToken(), name };
@@ -332,16 +337,25 @@ export class MyDurableObject extends DurableObject {
 				if(player.id !== this.room.hostId || this.room.status !== "waiting"){
 					throw new Error("Only the host can start a waiting room.");
 				}
-				if(this.room.players.length < 2){
+				if(this.room.players.length + (this.room.bots || []).length < 2){
 					throw new Error("At least two players are required to start online play.");
 				}
 				this.room.game = createGame(
-					this.room.players.map(({ id, name }) => ({ id, name })),
+					[
+						...this.room.players.map(({ id, name }) => ({ id, name })),
+						...(this.room.bots || []).map(({ id, name, botSkill }) => ({
+							id,
+							name,
+							isBot: true,
+							botSkill
+						}))
+					],
 					this.room.useTwosWild,
 					false
 				);
 				this.room.chat = null;
 				this.room.status = "playing";
+				this.runBotTurns();
 			}else if(data.type === "settings"){
 				if(player.id !== this.room.hostId || this.room.status !== "waiting" || this.room.game){
 					throw new Error("Only the host can change settings while the room is waiting.");
@@ -350,6 +364,33 @@ export class MyDurableObject extends DurableObject {
 					throw new Error("Choose whether 2s are wild.");
 				}
 				this.room.useTwosWild = data.useTwosWild;
+			}else if(data.type === "bots"){
+				if(player.id !== this.room.hostId || this.room.status !== "waiting" || this.room.game){
+					throw new Error("Only the host can configure bots while the room is waiting.");
+				}
+				if(!Array.isArray(data.bots) || data.bots.length > MAX_BOTS ||
+					this.room.players.length + data.bots.length > MAX_PLAYERS){
+					throw new Error("Add up to three bots, with no more than 20 players total.");
+				}
+				const names = this.room.players.map(roomPlayer =>
+					roomPlayer.name.toLocaleLowerCase()
+				);
+				const bots = data.bots.map(bot => {
+					const name = cleanName(bot?.name);
+					const botSkill = bot?.botSkill;
+					if(!name || !["easy", "normal", "hard", "extreme"].includes(botSkill)){
+						throw new Error("Each bot needs a name and a valid skill level.");
+					}
+					if(names.includes(name.toLocaleLowerCase())){
+						throw new Error("Player and bot names must be unique.");
+					}
+					names.push(name.toLocaleLowerCase());
+					return { id: createToken(12), name, botSkill };
+				});
+				if(bots.filter(bot => bot.botSkill === "extreme").length > 1){
+					throw new Error("Only one bot can have extreme skill.");
+				}
+				this.room.bots = bots;
 			}else if(data.type === "testSkipRound"){
 				if(player.id !== this.room.hostId){
 					throw new Error("Only the room host can skip a round.");
@@ -371,6 +412,8 @@ export class MyDurableObject extends DurableObject {
 				skipRound(this.room.game, data.targetRound);
 				if(this.room.game.status === "complete"){
 					this.room.status = "complete";
+				}else{
+					this.runBotTurns();
 				}
 			}else if(data.type === "kick"){
 				if(player.id !== this.room.hostId){
@@ -384,6 +427,8 @@ export class MyDurableObject extends DurableObject {
 					removePlayerFromGame(this.room.game, target.id);
 					if(this.room.game.status === "complete"){
 						this.room.status = "complete";
+					}else{
+						this.runBotTurns();
 					}
 				}else if(this.room.game){
 					const currentPlayerId = this.room.game.players[this.room.game.currentIndex]?.id;
@@ -420,6 +465,8 @@ export class MyDurableObject extends DurableObject {
 				discardAndEndTurn(this.room.game, player.id, data.cardId, data.layDown === true);
 				if(this.room.game.status === "complete"){
 					this.room.status = "complete";
+				}else{
+					this.runBotTurns();
 				}
 			}else if(data.type === "chat"){
 				if(this.room.status !== "playing" || this.room.game?.status !== "playing"){
@@ -543,6 +590,11 @@ export class MyDurableObject extends DurableObject {
 			hostId: this.room.hostId,
 			status: this.room.status,
 			useTwosWild: this.room.useTwosWild,
+			bots: (this.room.bots || []).map(({ id, name, botSkill }) => ({
+				id,
+				name,
+				botSkill
+			})),
 			players: this.room.players.map(player => ({
 				id: player.id,
 				name: player.name,
@@ -577,6 +629,8 @@ export class MyDurableObject extends DurableObject {
 					name: player.name,
 					score: player.score,
 					laidDown: player.laidDown,
+					isBot: player.isBot === true,
+					botSkill: player.isBot === true ? player.botSkill : null,
 					cardCount: player.hand.length,
 					turnsThisRound: player.turnsThisRound,
 				})),
@@ -585,6 +639,21 @@ export class MyDurableObject extends DurableObject {
 				winners: game.winners || [],
 			},
 		};
+	}
+
+	runBotTurns(){
+		const game = this.room?.game;
+		while(game?.status === "playing"){
+			const bot = game.players[game.currentIndex];
+			if(!bot?.isBot){
+				return;
+			}
+			playBotTurn(game, bot.id);
+			if(game.status === "complete"){
+				this.room.status = "complete";
+				return;
+			}
+		}
 	}
 
 	sendError(socket, message){
@@ -639,6 +708,8 @@ export class MyDurableObject extends DurableObject {
 			removePlayerFromGame(this.room.game, player.id);
 			if(this.room.game.status === "complete"){
 				this.room.status = "complete";
+			}else{
+				this.runBotTurns();
 			}
 		}else if(this.room.game){
 			const game = this.room.game;

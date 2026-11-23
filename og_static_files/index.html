@@ -24,6 +24,12 @@
                 <label class="field-label" for="playerCount">Players</label>
                 <input id="playerCount" type="number" min="1" max="20" step="1" value="1">
                 <div id="playerNames"></div>
+                <section class="bot-setup" aria-label="Local bots">
+                    <h2>Play against bots</h2>
+                    <p>Add up to 3 bots. Bot games use multiplayer scoring, not the solo leaderboard.</p>
+                    <div id="localBotEditors" class="bot-editors"></div>
+                    <button id="addLocalBot" class="secondary-button" type="button">Add bot</button>
+                </section>
                 <label class="check-row" for="twosWild">
                     <input id="twosWild" type="checkbox">
                     <span>Make 2s wild for this game</span>
@@ -49,7 +55,14 @@
                 <h2>Room <span id="roomCode"></span></h2>
                 <p>Share this code with the other players.</p>
                 <ul id="lobbyPlayers"></ul>
+                <ul id="lobbyBots" class="bot-list" hidden></ul>
                 <p id="lobbyStatus" role="status"></p>
+                <section id="onlineBotSetup" class="bot-setup" aria-label="Room bots">
+                    <h3>Room bots</h3>
+                    <p>The host can add up to 3 bots while the room is waiting.</p>
+                    <div id="onlineBotEditors" class="bot-editors"></div>
+                    <button id="addOnlineBot" class="secondary-button" type="button">Add bot</button>
+                </section>
                 <label id="onlineTwosWildOption" class="check-row" for="onlineTwosWild">
                     <input id="onlineTwosWild" type="checkbox">
                     <span>Make 2s wild for this game</span>
@@ -129,6 +142,12 @@
             <section id="handDiv" aria-label="Your hand">
                 <h2 id="handHeading">Your cards</h2>
                 <div id="handCards" class="hand-cards"></div>
+                <label class="hand-organize-toggle" for="handOrganizeMode">
+                    <span id="handSlideLabel">Cards Slide</span>
+                    <input id="handOrganizeMode" type="checkbox" role="switch" aria-label="Switch between cards slide and cards stay">
+                    <span class="hand-organize-slider" aria-hidden="true"></span>
+                    <span id="handStayLabel">Cards Stay</span>
+                </label>
             </section>
             <div id="turnActions"></div>
         </section>
@@ -181,7 +200,7 @@
                 <li>Before laying down, check that every card in your hand fits into a meld.</li>
             </ul>
             <h3>How to win</h3>
-            <p>In multiplayer, avoid points from cards left in your hand when a round ends. The player with the lowest total score after round 14 wins. In solo play, lay down in every round. The run timer starts with your first draw, pauses while the score board is open, and stops after laying down in round 14. Your score is max(0, 200000 − 1000 × turns − 100 × elapsed seconds), so a higher score is better. Leaderboards separate games with 2s wild from games without them.</p>
+            <p>In multiplayer, avoid points from cards left in your hand when a round ends. The player with the lowest total score after round 14 wins. In solo play, lay down in every round. The run timer starts with your first draw, pauses while the score board is open, and stops after laying down in round 14. Your score is max(110, 10000 − total turns × 10 − elapsed seconds), so a higher score is better. Leaderboards separate games with 2s wild from games without them.</p>
         </div>
     </dialog>
 

@@ -1,7 +1,14 @@
 export const MAX_PLAYERS = 20;
+export const MAX_BOTS = 3;
 export const FIRST_ROUND = 3;
 export const LAST_ROUND = 14;
 export const SUITS = ["hearts", "dimonds", "spades", "clubs"];
+export const BOT_NAMES = [
+    "Harry Potter", "Hermione Granger", "Ron Weasley", "Luna Lovegood",
+    "Neville Longbottom", "Ginny Weasley", "Fred Weasley", "George Weasley",
+    "Cho Chang", "Cedric Diggory", "Aang", "Katara", "Sokka", "Toph",
+    "Zuko", "Iroh", "Azula", "Suki", "Ty Lee", "Mai"
+];
 export const CHAT_QUOTES = [
     "\"Oh, you sweet little thing, you!\"",
     "\"You can't play this game without wild cards.\"",
@@ -16,7 +23,7 @@ export function soloRunScore(totalTurns, elapsedSeconds){
         !Number.isSafeInteger(elapsedSeconds) || elapsedSeconds < 0){
         throw new RangeError("Solo run turns and elapsed time must be non-negative integers.");
     }
-    return Math.max(0, 200000 - totalTurns * 1000 - elapsedSeconds * 100);
+    return Math.max(110, 10000 - totalTurns * 10 - elapsedSeconds);
 }
 
 export function getSoloRunElapsedSeconds(game, now = Date.now()){
@@ -272,6 +279,12 @@ export function createGame(players, useTwosWild = false, solo = false){
     if(!Array.isArray(players) || players.length < 1 || players.length > MAX_PLAYERS){
         throw new RangeError("A game requires between 1 and 20 players.");
     }
+    const bots = players.filter(player => player.isBot === true);
+    if(bots.length > MAX_BOTS || bots.some(player =>
+        !["easy", "normal", "hard", "extreme"].includes(player.botSkill)
+    ) || bots.filter(player => player.botSkill === "extreme").length > 1){
+        throw new RangeError("A game can have up to three bots and only one extreme bot.");
+    }
     if(solo && players.length !== 1){
         throw new RangeError("Solo games require exactly one player.");
     }
@@ -283,6 +296,8 @@ export function createGame(players, useTwosWild = false, solo = false){
         players: players.map(player => ({
             id: player.id,
             name: player.name,
+            isBot: player.isBot === true,
+            botSkill: player.isBot === true ? player.botSkill : null,
             score: 0,
             hand: [],
             laidDown: false,
@@ -366,6 +381,180 @@ export function drawCard(game, playerId, source){
         game.soloStartedAt = Date.now();
     }
     return card;
+}
+
+function botHandValue(hand, round, useTwosWild, skill){
+    const synergyMultiplier = skill === "extreme" ? 1.4 : skill === "hard" ? 1.2 : 1;
+    let value = 0;
+    for(let index = 0; index < hand.length; index++){
+        const card = hand[index];
+        value += isWild(card, round, useTwosWild)
+            ? 18
+            : -cardPoints(card, round, useTwosWild);
+        for(let otherIndex = 0; otherIndex < index; otherIndex++){
+            const other = hand[otherIndex];
+            const cardIsWild = isWild(card, round, useTwosWild);
+            const otherIsWild = isWild(other, round, useTwosWild);
+            if(cardIsWild || otherIsWild){
+                value += (cardIsWild && otherIsWild ? 5 : 8) * synergyMultiplier;
+            }else if(card.rank === other.rank){
+                value += 17 * synergyMultiplier;
+            }else if(card.suit === other.suit){
+                const aceHighDistance = Math.abs(card.rank - other.rank);
+                const firstRank = card.rank === 14 ? 1 : card.rank;
+                const secondRank = other.rank === 14 ? 1 : other.rank;
+                const distance = Math.min(
+                    aceHighDistance,
+                    Math.abs(firstRank - secondRank)
+                );
+                if(distance === 1){
+                    value += 18 * synergyMultiplier;
+                }else if(distance === 2){
+                    value += 9 * synergyMultiplier;
+                }
+            }
+        }
+    }
+    return value;
+}
+
+function bestBotDiscard(hand, round, useTwosWild, skill, checkLayDown = true){
+    const choices = [];
+    for(const [index, card] of hand.entries()){
+        const remaining = hand.filter((_, cardIndex) => cardIndex !== index);
+        const layDown = checkLayDown && canLayDown(remaining, round, useTwosWild);
+        const score = layDown
+            ? Number.MAX_SAFE_INTEGER
+            : botHandValue(remaining, round, useTwosWild, skill);
+        choices.push({ card, layDown, score });
+    }
+    return choices;
+}
+
+function bestBotFinalTurnDiscard(hand, round, useTwosWild){
+    return hand.map((card, index) => {
+        const remaining = hand.filter((_, cardIndex) => cardIndex !== index);
+        const layDown = canLayDown(remaining, round, useTwosWild);
+        return {
+            card,
+            layDown,
+            score: -unmeldedCardPoints(remaining, round, useTwosWild)
+        };
+    });
+}
+
+function estimateUnknownDraws(hand, knownCards = []){
+    const unavailableCards = [...hand, ...knownCards];
+    const candidates = [];
+    for(const suit of SUITS){
+        for(let rank = 2; rank <= 14; rank++){
+            candidates.push({
+                id: "estimate-" + suit + "-" + rank,
+                rank,
+                suit
+            });
+        }
+    }
+    candidates.push(
+        { id: "estimate-joker-1", rank: "Joker", suit: "Joker" },
+        { id: "estimate-joker-2", rank: "Joker", suit: "Joker" }
+    );
+    return candidates.filter(candidate =>
+        !unavailableCards.some(card => card.rank === candidate.rank &&
+            (candidate.rank === "Joker" || card.suit === candidate.suit))
+    );
+}
+
+export function chooseBotMove(game, playerId){
+    const player = game.players.find(candidate => candidate.id === playerId);
+    if(!player?.isBot || game.status !== "playing"){
+        throw new Error("A bot move requires an active bot player.");
+    }
+    const hand = player.hand;
+    if(game.hasDrawn){
+        const choices = game.finalTurnsRemaining !== null
+            ? bestBotFinalTurnDiscard(hand, game.round, game.useTwosWild)
+            : bestBotDiscard(
+                hand, game.round, game.useTwosWild, player.botSkill || "normal"
+            );
+        if(!choices.length){
+            throw new Error("The bot has no card to discard.");
+        }
+        let choice;
+        if(player.botSkill === "easy"){
+            const laydownChoices = choices.filter(candidate => candidate.layDown);
+            const availableChoices = laydownChoices.length ? laydownChoices : choices;
+            choice = availableChoices[randomInteger(availableChoices.length)];
+        }else{
+            choice = choices.reduce((best, candidate) =>
+                candidate.score > best.score ? candidate : best
+            );
+        }
+        return {
+            source: null,
+            discardCardId: choice.card.id,
+            layDown: choice.layDown
+        };
+    }
+
+    const skill = player.botSkill || "normal";
+    const topDiscard = game.discardPile.at(-1);
+    const closingTurn = game.finalTurnsRemaining !== null;
+    const getDiscardChoices = closingTurn
+        ? bestBotFinalTurnDiscard
+        : bestBotDiscard;
+    const discardChoices = topDiscard
+        ? getDiscardChoices(
+            [...hand, topDiscard],
+            game.round,
+            game.useTwosWild,
+            skill
+        )
+        : null;
+    const discardChoice = discardChoices?.reduce((best, candidate) =>
+        candidate.score > best.score ? candidate : best
+    );
+    const unknownDraws = estimateUnknownDraws(hand, [topDiscard].filter(Boolean));
+    const deckScores = unknownDraws.map(candidate =>
+        Math.max(...getDiscardChoices(
+            [...hand, candidate],
+            game.round,
+            game.useTwosWild,
+            skill,
+            false
+        ).map(choice => choice.score))
+    ).sort((first, second) => first - second);
+
+    let takeDiscard = false;
+    if(discardChoice && skill === "easy"){
+        takeDiscard = randomInteger(2) === 0;
+    }else if(discardChoice && deckScores.length){
+        const percentile = skill === "extreme" ? 0.95 : skill === "hard" ? 0.8 : 0.5;
+        const expectedScore = deckScores[Math.floor(
+            (deckScores.length - 1) * percentile
+        )];
+        takeDiscard = closingTurn
+            ? discardChoice.score > expectedScore
+            : discardChoice.score >= expectedScore;
+    }
+    return {
+        source: takeDiscard ? "discard" : "deck",
+        discardCardId: null,
+        layDown: false
+    };
+}
+
+export function playBotTurn(game, playerId){
+    const player = game.players.find(candidate => candidate.id === playerId);
+    if(!player?.isBot){
+        throw new Error("Only a bot can take an automated turn.");
+    }
+    if(!game.hasDrawn){
+        const move = chooseBotMove(game, playerId);
+        drawCard(game, playerId, move.source);
+    }
+    const discard = chooseBotMove(game, playerId);
+    discardAndEndTurn(game, playerId, discard.discardCardId, discard.layDown);
 }
 
 function finishRound(game){

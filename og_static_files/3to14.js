@@ -1,17 +1,21 @@
 import {
 	canLayDown,
+	BOT_NAMES,
 	cardPoints,
 	CHAT_QUOTES,
 	createGame,
 	createToken,
 	discardAndEndTurn,
-drawCard,
-findAdjacentMeldGroups,
-getSoloRunElapsedSeconds,
-isWild,
-LAST_ROUND,
-soloRunScore,
-skipRound
+	drawCard,
+	findAdjacentMeldGroups,
+	getSoloRunElapsedSeconds,
+	isWild,
+	LAST_ROUND,
+	MAX_BOTS,
+	MAX_PLAYERS,
+	playBotTurn,
+	soloRunScore,
+	skipRound
 } from "./gameRules.js";
 
 const $ = selector => document.querySelector(selector);
@@ -28,6 +32,8 @@ const decisionDialog = $("#decisionDialog");
 const notice = $("#notice");
 const localScoreKey = "3to14:local-solo-top10";
 const localGameStorageKey = "3to14:local-game";
+const handGapStorageKey = "3to14:hand-gaps";
+const handStayLayoutStorageKey = "3to14:hand-stay-layout";
 const roomStorageKey = "3to14:room-session";
 const cardBackImages = Array.from({ length: 6 }, (_, index) =>
 	"Images/optimized/Queenie" + (index + 1) + ".jpg"
@@ -41,6 +47,8 @@ const suitImages = {
 
 let mode = "local";
 let localGame = null;
+let localBotConfigs = [];
+let localBotTurnRunning = false;
 let onlineCredentials = null;
 let onlineState = null;
 let globalLeaderboardScores = null;
@@ -49,10 +57,21 @@ let selectedCardId = null;
 let reorderSelectedCardId = null;
 let handOrder = [];
 let handGapPositions = [];
+let handStayLayout = [];
+let handStayLayouts = {};
+let activeHandStayLayoutKey = null;
+let legacyHandStayLayout = null;
+let selectedStayGapIndex = null;
 let handVisible = false;
 let activeHandDrag = false;
+let handOrganizeMode = "slide";
+let defaultHandOrganizeMode = "slide";
+let handOrganizeModes = {};
+let renderedLocalRound = null;
+let renderedOnlineRound = null;
 let pendingAction = false;
 let pendingDrawIndex = null;
+let pendingDrawStayIndex = null;
 let suppressNextCardClick = false;
 let suppressPileClick = false;
 let manuallyLeavingRoom = false;
@@ -67,6 +86,40 @@ let soloTimerInterval = null;
 let roundLabelClickCount = 0;
 let roundLabelClickTimer = null;
 
+function activateHandStayLayout(key){
+	if(activeHandStayLayoutKey === key){
+		handStayLayouts[key] = handStayLayout;
+		return;
+	}
+	if(activeHandStayLayoutKey !== null){
+		handStayLayouts[activeHandStayLayoutKey] = handStayLayout;
+	}
+	handStayLayout = Array.isArray(handStayLayouts[key])
+		? handStayLayouts[key]
+		: [];
+	handStayLayouts[key] = handStayLayout;
+	activeHandStayLayoutKey = key;
+}
+
+function resetHandStayLayouts(){
+	handStayLayouts = {};
+	handStayLayout = [];
+	activeHandStayLayoutKey = null;
+}
+
+function isHandOrganizeMode(value){
+	return value === "slide" || value === "stay";
+}
+
+function saveHandOrganizeModes(){
+	try{
+		localStorage.setItem("handOrganizeMode", defaultHandOrganizeMode);
+		localStorage.setItem("handOrganizeModes", JSON.stringify(handOrganizeModes));
+	}catch(error){
+		showNotice("Your card organizing preference could not be saved.");
+	}
+}
+
 function showNotice(message){
 	notice.textContent = message;
 	notice.hidden = false;
@@ -74,6 +127,75 @@ function showNotice(message){
 	noticeTimer = setTimeout(() => {
 		notice.hidden = true;
 	}, 6000);
+}
+
+function selectStayCardForSwap(cardId, canDiscard = false){
+	const index = handStayLayout.indexOf(cardId);
+	if(index < 0){
+		return;
+	}
+	let selectedCardIdForSwap = reorderSelectedCardId ?? selectedCardId;
+	if(selectedCardIdForSwap !== null &&
+		!handStayLayout.includes(selectedCardIdForSwap)){
+		reorderSelectedCardId = null;
+		selectedCardId = null;
+		selectedCardIdForSwap = null;
+	}
+	if(selectedStayGapIndex !== null){
+		[handStayLayout[selectedStayGapIndex], handStayLayout[index]] =
+			[handStayLayout[index], handStayLayout[selectedStayGapIndex]];
+		reorderSelectedCardId = null;
+		selectedStayGapIndex = null;
+		selectedCardId = null;
+		persistLocalGame();
+	}else if(selectedCardIdForSwap === null){
+		reorderSelectedCardId = cardId;
+		selectedCardId = canDiscard ? cardId : null;
+	}else if(selectedCardIdForSwap === cardId){
+		reorderSelectedCardId = null;
+		selectedCardId = null;
+	}else{
+		const selectedIndex = handStayLayout.indexOf(selectedCardIdForSwap);
+		if(selectedIndex >= 0){
+			[handStayLayout[selectedIndex], handStayLayout[index]] =
+				[handStayLayout[index], handStayLayout[selectedIndex]];
+			reorderSelectedCardId = null;
+			selectedStayGapIndex = null;
+			selectedCardId = null;
+			persistLocalGame();
+		}
+	}
+	renderCurrentGame();
+}
+
+function selectStayGapForSwap(index){
+	let selectedCardIdForSwap = reorderSelectedCardId ?? selectedCardId;
+	if(selectedCardIdForSwap !== null &&
+		!handStayLayout.includes(selectedCardIdForSwap)){
+		reorderSelectedCardId = null;
+		selectedCardId = null;
+		selectedCardIdForSwap = null;
+	}
+	if(selectedCardIdForSwap !== null){
+		const cardIndex = handStayLayout.indexOf(selectedCardIdForSwap);
+		if(cardIndex >= 0){
+			[handStayLayout[cardIndex], handStayLayout[index]] =
+				[handStayLayout[index], handStayLayout[cardIndex]];
+			reorderSelectedCardId = null;
+			selectedStayGapIndex = null;
+			selectedCardId = null;
+			persistLocalGame();
+		}
+	}else if(selectedStayGapIndex !== null){
+		[handStayLayout[selectedStayGapIndex], handStayLayout[index]] =
+			[handStayLayout[index], handStayLayout[selectedStayGapIndex]];
+		selectedStayGapIndex = null;
+		selectedCardId = null;
+		persistLocalGame();
+	}else{
+		selectedStayGapIndex = index;
+	}
+	renderCurrentGame();
 }
 
 function askDecision(title, message, acceptText, denyText){
@@ -196,6 +318,9 @@ function closeScoreboard(){
 		resumeSoloTimer(localGame);
 		persistLocalGame();
 		updateSoloTimer();
+		if(localGame?.status === "playing" && currentLocalPlayer()?.isBot){
+			void runLocalBotTurns();
+		}
 	}
 }
 
@@ -217,6 +342,11 @@ function persistLocalGame(){
 	}
 	try{
 		localStorage.setItem(localGameStorageKey, JSON.stringify(localGame));
+		localStorage.setItem(handGapStorageKey, JSON.stringify(handGapPositions));
+		if(activeHandStayLayoutKey !== null){
+			handStayLayouts[activeHandStayLayoutKey] = handStayLayout;
+		}
+		localStorage.setItem(handStayLayoutStorageKey, JSON.stringify(handStayLayouts));
 	}catch(error){
 		showNotice("Your current game could not be saved on this device.");
 	}
@@ -246,6 +376,31 @@ function restoreSavedLocalGame(){
 		removeSavedLocalGame();
 		return false;
 	}
+	try{
+		const savedGaps = JSON.parse(localStorage.getItem(handGapStorageKey) || "[]");
+		handGapPositions = Array.isArray(savedGaps)
+			? savedGaps.filter(Number.isInteger)
+			: [];
+	}catch(error){
+		handGapPositions = [];
+	}
+	try{
+		const savedLayout = JSON.parse(
+			localStorage.getItem(handStayLayoutStorageKey) || "[]"
+		);
+		if(Array.isArray(savedLayout)){
+			legacyHandStayLayout = savedLayout;
+			handStayLayouts = {};
+		}else if(savedLayout && typeof savedLayout === "object"){
+			handStayLayouts = Object.fromEntries(
+				Object.entries(savedLayout).filter(([, layout]) => Array.isArray(layout))
+			);
+		}else{
+			handStayLayouts = {};
+		}
+	}catch(error){
+		handStayLayouts = {};
+	}
 	if(game.solo && !Number.isSafeInteger(game.soloTotalTurns)){
 		const historicalTurns = game.history.reduce((total, entry) =>
 			total + (entry.scores[0]?.turns || 0), 0);
@@ -260,6 +415,13 @@ function restoreSavedLocalGame(){
 	}
 	localGame = game;
 	mode = "local";
+	renderedLocalRound = null;
+	activeHandStayLayoutKey = null;
+	const restoredLayoutKey = "local:" + currentLocalPlayer().id;
+	if(legacyHandStayLayout){
+		handStayLayouts[restoredLayoutKey] = legacyHandStayLayout;
+		legacyHandStayLayout = null;
+	}
 	handVisible = game.solo;
 	selectedCardId = null;
 	handOrder = [];
@@ -300,6 +462,95 @@ function renderPlayerNames(){
 		label.appendChild(input);
 		fields.appendChild(label);
 	}
+}
+
+function createBotConfig(configs){
+	const existingNames = new Set([
+		...configs.map(bot => bot.name.toLocaleLowerCase()),
+		...Array.from($("#playerNames").querySelectorAll("input"), input =>
+			input.value.trim().toLocaleLowerCase()
+		),
+		...(onlineState?.room?.players || []).map(player =>
+			player.name.toLocaleLowerCase()
+		)
+	]);
+	const availableNames = BOT_NAMES.filter(name =>
+		!existingNames.has(name.toLocaleLowerCase())
+	);
+	const name = availableNames.length
+		? availableNames[Math.floor(Math.random() * availableNames.length)]
+		: "Bot " + (configs.length + 1);
+	return {
+		id: createToken(8),
+		name,
+		botSkill: "normal"
+	};
+}
+
+function readBotEditors(container, existingBots){
+	return Array.from(container.querySelectorAll(".bot-editor"), (row, index) => ({
+		...(existingBots[index]?.id ? { id: existingBots[index].id } : {}),
+		name: row.querySelector(".bot-name").value.trim(),
+		botSkill: row.querySelector(".bot-skill").value
+	}));
+}
+
+function renderBotEditors(container, bots, onChange){
+	container.replaceChildren();
+	for(const [index, bot] of bots.entries()){
+		const row = document.createElement("div");
+		row.className = "bot-editor";
+		const nameLabel = document.createElement("label");
+		nameLabel.textContent = "Bot " + (index + 1) + " name";
+		const nameInput = document.createElement("input");
+		nameInput.className = "bot-name";
+		nameInput.type = "text";
+		nameInput.maxLength = 20;
+		nameInput.value = bot.name;
+		nameLabel.appendChild(nameInput);
+		const skillLabel = document.createElement("label");
+		skillLabel.textContent = "Skill";
+		const skillSelect = document.createElement("select");
+		skillSelect.className = "bot-skill";
+		for(const skill of ["easy", "normal", "hard", "extreme"]){
+			const option = document.createElement("option");
+			option.value = skill;
+			option.textContent = skill[0].toUpperCase() + skill.slice(1);
+			option.disabled = skill === "extreme" && bots.some((other, otherIndex) =>
+				otherIndex !== index && other.botSkill === "extreme"
+			);
+			skillSelect.appendChild(option);
+		}
+		skillSelect.value = bot.botSkill;
+		skillLabel.appendChild(skillSelect);
+		const remove = document.createElement("button");
+		remove.className = "remove-bot secondary-button";
+		remove.type = "button";
+		remove.textContent = "Remove";
+		remove.addEventListener("click", () => {
+			const updated = readBotEditors(container, bots);
+			updated.splice(index, 1);
+			onChange(updated);
+		});
+		const update = () => {
+			const updated = readBotEditors(container, bots);
+			if(updated[index]?.botSkill === "extreme" && bots[index]?.botSkill !== "extreme"){
+				updated[index].name = "Raymond";
+			}
+			onChange(updated);
+		};
+		nameInput.addEventListener("change", update);
+		skillSelect.addEventListener("change", update);
+		row.append(nameLabel, skillLabel, remove);
+		container.appendChild(row);
+	}
+}
+
+function updateLocalBotEditors(bots){
+	localBotConfigs = bots;
+	renderBotEditors($("#localBotEditors"), localBotConfigs, updateLocalBotEditors);
+	$("#addLocalBot").disabled = localBotConfigs.length >= MAX_BOTS ||
+		localBotConfigs.length + Number($("#playerCount").value) >= MAX_PLAYERS;
 }
 
 function readLocalScores(){
@@ -504,7 +755,13 @@ function drawCardElement(card, index, enabled, handCard = false){
 				return;
 			}
 			if(enabled){
-				selectCard(card.id);
+				if(handOrganizeMode === "stay"){
+					selectStayCardForSwap(card.id, true);
+				}else{
+					selectCard(card.id);
+				}
+			}else if(handOrganizeMode === "stay"){
+				selectStayCardForSwap(card.id);
 			}else{
 				selectHandCardForReorder(card.id);
 			}
@@ -513,7 +770,13 @@ function drawCardElement(card, index, enabled, handCard = false){
 			if(event.key === "Enter" || event.key === " "){
 				event.preventDefault();
 				if(enabled){
-					selectCard(card.id);
+					if(handOrganizeMode === "stay"){
+						selectStayCardForSwap(card.id, true);
+					}else{
+						selectCard(card.id);
+					}
+				}else if(handOrganizeMode === "stay"){
+					selectStayCardForSwap(card.id);
 				}else{
 					selectHandCardForReorder(card.id);
 				}
@@ -646,10 +909,39 @@ function reorderCards(fromId, toId){
 
 function enableCardDragging(element, cardId){
 	let drag = null;
+	const startAutoScroll = () => {
+		if(!drag || drag.scrollFrame){
+			return;
+		}
+		const scrollStep = () => {
+			if(!drag?.dragging){
+				drag.scrollFrame = null;
+				return;
+			}
+			const edge = 84;
+			let amount = 0;
+			if(drag.pointerY < edge){
+				amount = -Math.ceil((edge - drag.pointerY) / 8);
+			}else if(drag.pointerY > window.innerHeight - edge){
+				amount = Math.ceil((drag.pointerY - (window.innerHeight - edge)) / 8);
+			}
+			if(amount !== 0){
+				window.scrollBy({ top: amount, left: 0, behavior: "auto" });
+			}
+			drag.scrollFrame = requestAnimationFrame(scrollStep);
+		};
+		drag.scrollFrame = requestAnimationFrame(scrollStep);
+	};
+	const clearStayDropIndicator = () => {
+		handCards.querySelectorAll(".stay-drop-target").forEach(item =>
+			item.classList.remove("stay-drop-target")
+		);
+	};
 	const handleMove = event => {
 		if(!drag || drag.id !== event.pointerId){
 			return;
 		}
+		drag.pointerY = event.clientY;
 		if(!drag.dragging && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 7){
 			drag.dragging = true;
 			activeHandDrag = true;
@@ -661,13 +953,22 @@ function enableCardDragging(element, cardId){
 			document.body.appendChild(drag.ghost);
 			element.classList.add("drag-placeholder");
 			addHandDropSlots(cardId);
+			startAutoScroll();
 		}
 		if(drag.dragging){
 			drag.ghost.style.left = event.clientX - drag.offsetX + "px";
 			drag.ghost.style.top = event.clientY - drag.offsetY + "px";
 			const target = document.elementFromPoint(event.clientX, event.clientY);
 			discardTarget.classList.toggle("drop-target-active", Boolean(target && discardTarget.contains(target)));
-			scheduleHandPlaceholder(element, drag, event.clientX, event.clientY);
+			if(handOrganizeMode === "slide"){
+				scheduleHandPlaceholder(element, drag, event.clientX, event.clientY);
+			}else{
+				clearStayDropIndicator();
+				const stayTarget = target?.closest(".hand-card, .hand-drop-slot");
+				if(stayTarget && handCards.contains(stayTarget)){
+					stayTarget.classList.add("stay-drop-target");
+				}
+			}
 		}
 	};
 	const removePointerListeners = () => {
@@ -679,6 +980,10 @@ function enableCardDragging(element, cardId){
 		if(!drag || drag.id !== event.pointerId){
 			return;
 		}
+		clearStayDropIndicator();
+		if(drag.scrollFrame){
+			cancelAnimationFrame(drag.scrollFrame);
+		}
 		const dropSlot = drag.dragging
 			? Array.from(handCards.querySelectorAll(".hand-drop-slot"))
 				.filter(slot => !slot.classList.contains("hand-drop-slot-reserved") ||
@@ -689,7 +994,7 @@ function enableCardDragging(element, cardId){
 					event.clientY >= rect.top && event.clientY <= rect.bottom;
 			})
 			: null;
-		if(drag.dragging && !dropSlot && isInsideHand(event.clientX, event.clientY)){
+		if(handOrganizeMode === "slide" && drag.dragging && !dropSlot && isInsideHand(event.clientX, event.clientY)){
 			clearTimeout(drag.reorderTimer);
 			updateHandPlaceholder(element, event.clientX, event.clientY);
 		}
@@ -713,10 +1018,32 @@ function enableCardDragging(element, cardId){
 		element.classList.remove("drag-placeholder");
 		if(dropOnDiscard){
 			clearHandDropSlots();
-			handGapPositions = [];
 			renderCurrentGame();
 			void discardCard(cardId);
 		}else{
+			if(handOrganizeMode === "stay"){
+				const targetCard = document.elementFromPoint(event.clientX, event.clientY)
+					?.closest(".hand-card");
+				const targetSlot = document.elementFromPoint(event.clientX, event.clientY)
+					?.closest(".hand-drop-slot");
+				const sourceIndex = handStayLayout.indexOf(cardId);
+				if(targetCard && targetCard.dataset.cardId !== cardId){
+					const targetIndex = handStayLayout.indexOf(targetCard.dataset.cardId);
+					if(sourceIndex >= 0 && targetIndex >= 0){
+						[handStayLayout[sourceIndex], handStayLayout[targetIndex]] =
+							[handStayLayout[targetIndex], handStayLayout[sourceIndex]];
+					}
+				}else if(targetSlot){
+					const targetIndex = Number(targetSlot.dataset.stayIndex);
+					if(sourceIndex >= 0 && Number.isInteger(targetIndex)){
+						handStayLayout[sourceIndex] = "gap";
+						handStayLayout[targetIndex] = cardId;
+					}
+				}
+				persistLocalGame();
+				renderCurrentGame();
+				return;
+			}
 			const cardsInOrder = Array.from(handCards.querySelectorAll(".hand-card"));
 			const draggedCardIndex = cardsInOrder.findIndex(card =>
 				card.dataset.cardId === cardId
@@ -746,6 +1073,10 @@ function enableCardDragging(element, cardId){
 		if(!drag || drag.id !== event.pointerId){
 			return;
 		}
+		clearStayDropIndicator();
+		if(drag.scrollFrame){
+			cancelAnimationFrame(drag.scrollFrame);
+		}
 		clearTimeout(drag.reorderTimer);
 		drag.ghost?.remove();
 		drag = null;
@@ -770,6 +1101,7 @@ function enableCardDragging(element, cardId){
 			offsetX: event.clientX - rect.left,
 			offsetY: event.clientY - rect.top,
 			id: event.pointerId,
+			pointerY: event.clientY,
 			dragging: false,
 			ghost: null,
 			reorderTimer: null
@@ -780,15 +1112,126 @@ function enableCardDragging(element, cardId){
 	});
 }
 
+function enableDashSlotDragging(slot){
+	let drag = null;
+	const startAutoScroll = () => {
+		if(!drag || drag.scrollFrame){
+			return;
+		}
+		const scrollStep = () => {
+			if(!drag){
+				drag.scrollFrame = null;
+				return;
+			}
+			const edge = 84;
+			let amount = 0;
+			if(drag.pointerY < edge){
+				amount = -Math.ceil((edge - drag.pointerY) / 8);
+			}else if(drag.pointerY > window.innerHeight - edge){
+				amount = Math.ceil((drag.pointerY - (window.innerHeight - edge)) / 8);
+			}
+			if(amount !== 0){
+				window.scrollBy({ top: amount, left: 0, behavior: "auto" });
+			}
+			drag.scrollFrame = requestAnimationFrame(scrollStep);
+		};
+		drag.scrollFrame = requestAnimationFrame(scrollStep);
+	};
+	slot.addEventListener("pointerdown", event => {
+		if(handOrganizeMode !== "stay" || (event.pointerType === "mouse" && event.button !== 0)){
+			return;
+		}
+		const rect = slot.getBoundingClientRect();
+		drag = {
+			id: event.pointerId,
+			x: event.clientX,
+			y: event.clientY,
+			pointerY: event.clientY,
+			offsetX: event.clientX - rect.left,
+			offsetY: event.clientY - rect.top,
+			ghost: null
+		};
+		document.addEventListener("pointermove", handleMove);
+		document.addEventListener("pointerup", handleUp);
+	});
+	const handleMove = event => {
+		if(!drag || drag.id !== event.pointerId){
+			return;
+		}
+		drag.pointerY = event.clientY;
+		if(!drag.ghost && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 7){
+			drag.ghost = slot.cloneNode(true);
+			drag.ghost.className = "hand-drop-slot hand-drag-ghost";
+			drag.ghost.style.width = slot.offsetWidth + "px";
+			drag.ghost.style.height = slot.offsetHeight + "px";
+			document.body.appendChild(drag.ghost);
+			slot.classList.add("drag-placeholder");
+			startAutoScroll();
+		}
+		if(drag.ghost){
+			drag.ghost.style.left = event.clientX - drag.offsetX + "px";
+			drag.ghost.style.top = event.clientY - drag.offsetY + "px";
+			handCards.querySelectorAll(".stay-drop-target").forEach(item =>
+				item.classList.remove("stay-drop-target")
+			);
+			const target = document.elementFromPoint(event.clientX, event.clientY)
+				?.closest(".hand-card, .hand-drop-slot");
+			if(target && handCards.contains(target)){
+				target.classList.add("stay-drop-target");
+			}
+		}
+	};
+	const handleUp = event => {
+		if(!drag || drag.id !== event.pointerId){
+			return;
+		}
+		const wasDragging = Boolean(drag.ghost);
+		const ghost = drag.ghost;
+		const scrollFrame = drag.scrollFrame;
+		slot.classList.remove("drag-placeholder");
+		document.removeEventListener("pointermove", handleMove);
+		document.removeEventListener("pointerup", handleUp);
+		drag = null;
+		if(!wasDragging){
+			return;
+		}
+		if(scrollFrame){
+			cancelAnimationFrame(scrollFrame);
+		}
+		handCards.querySelectorAll(".stay-drop-target").forEach(item =>
+			item.classList.remove("stay-drop-target")
+		);
+		const targetCard = document.elementFromPoint(event.clientX, event.clientY)
+			?.closest(".hand-card");
+		const targetSlot = document.elementFromPoint(event.clientX, event.clientY)
+			?.closest(".hand-drop-slot");
+		const sourceIndex = Number(slot.dataset.stayIndex);
+		const targetCardIndex = targetCard
+			? handStayLayout.indexOf(targetCard.dataset.cardId)
+			: -1;
+		const targetSlotIndex = targetSlot
+			? Number(targetSlot.dataset.stayIndex)
+			: -1;
+		if(Number.isInteger(sourceIndex)){
+			if(targetCardIndex >= 0){
+				[handStayLayout[sourceIndex], handStayLayout[targetCardIndex]] =
+					[handStayLayout[targetCardIndex], handStayLayout[sourceIndex]];
+			}else if(Number.isInteger(targetSlotIndex) && targetSlotIndex !== sourceIndex){
+				[handStayLayout[sourceIndex], handStayLayout[targetSlotIndex]] =
+					[handStayLayout[targetSlotIndex], handStayLayout[sourceIndex]];
+			}
+		}
+		ghost?.remove();
+		persistLocalGame();
+		renderCurrentGame();
+	};
+}
+
 function addHandDropSlots(cardId){
-	handCards.classList.add("is-organizing");
-	const handCardsInOrder = Array.from(handCards.querySelectorAll(".hand-card"));
-	if(!handCardsInOrder.some(card => card.dataset.cardId === cardId)){
+	if(handOrganizeMode === "stay"){
 		return;
 	}
-	const slotsToAdd = getAvailableTrailingHandDropSlots(cardId, handCardsInOrder);
-	handCards.querySelectorAll(".hand-drop-slot-reserved")
-		.forEach((slot, index) => slot.classList.toggle("is-active", index < slotsToAdd));
+	handCards.classList.remove("is-organizing");
 }
 
 function getAvailableTrailingHandDropSlots(cardId, cardsInOrder){
@@ -857,12 +1300,52 @@ function isInsideHand(x, y){
 	return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
+function findClosestStayGap(x, y){
+	let closest = null;
+	let closestDistance = Number.POSITIVE_INFINITY;
+	for(const slot of handCards.querySelectorAll(".hand-drop-slot-stay")){
+		const rect = slot.getBoundingClientRect();
+		const centerX = rect.left + rect.width / 2;
+		const centerY = rect.top + rect.height / 2;
+		const distance = (x - centerX) ** 2 + (y - centerY) ** 2;
+		if(distance < closestDistance){
+			closest = slot;
+			closestDistance = distance;
+		}
+	}
+	return closest;
+}
+
 function enablePileDragging(element, source){
 	let drag = null;
+	const startAutoScroll = () => {
+		if(!drag || drag.scrollFrame){
+			return;
+		}
+		const scrollStep = () => {
+			if(!drag?.dragging){
+				drag.scrollFrame = null;
+				return;
+			}
+			const edge = 84;
+			let amount = 0;
+			if(drag.pointerY < edge){
+				amount = -Math.ceil((edge - drag.pointerY) / 8);
+			}else if(drag.pointerY > window.innerHeight - edge){
+				amount = Math.ceil((drag.pointerY - (window.innerHeight - edge)) / 8);
+			}
+			if(amount !== 0){
+				window.scrollBy({ top: amount, left: 0, behavior: "auto" });
+			}
+			drag.scrollFrame = requestAnimationFrame(scrollStep);
+		};
+		drag.scrollFrame = requestAnimationFrame(scrollStep);
+	};
 	const handleMove = event => {
 		if(!drag || drag.id !== event.pointerId){
 			return;
 		}
+		drag.pointerY = event.clientY;
 		if(!drag.dragging && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 7){
 			drag.dragging = true;
 			drag.ghost = drag.card.cloneNode(true);
@@ -871,20 +1354,36 @@ function enablePileDragging(element, source){
 			drag.ghost.style.width = drag.card.offsetWidth + "px";
 			drag.ghost.style.height = drag.card.offsetHeight + "px";
 			document.body.appendChild(drag.ghost);
-			drag.marker = document.createElement("div");
-			drag.marker.className = "hand-drop-placeholder";
-			drag.marker.setAttribute("aria-hidden", "true");
-			drag.marker.style.width = drag.card.offsetWidth + "px";
-			drag.marker.style.height = drag.card.offsetHeight + "px";
-			handCards.appendChild(drag.marker);
+			if(handOrganizeMode !== "stay"){
+				drag.marker = document.createElement("div");
+				drag.marker.className = "hand-drop-placeholder";
+				drag.marker.setAttribute("aria-hidden", "true");
+				drag.marker.style.width = drag.card.offsetWidth + "px";
+				drag.marker.style.height = drag.card.offsetHeight + "px";
+				handCards.appendChild(drag.marker);
+			}
+			startAutoScroll();
 		}
 		if(drag.dragging){
 			drag.ghost.style.left = event.clientX - drag.offsetX + "px";
 			drag.ghost.style.top = event.clientY - drag.offsetY + "px";
 			const overHand = isInsideHand(event.clientX, event.clientY);
-			drag.marker.hidden = !overHand;
-			if(overHand){
-				scheduleHandPlaceholder(drag.marker, drag, event.clientX, event.clientY);
+			if(handOrganizeMode === "stay"){
+				handCards.querySelectorAll(".stay-drop-target").forEach(item =>
+					item.classList.remove("stay-drop-target")
+				);
+				if(overHand){
+					findClosestStayGap(
+						event.clientX - drag.offsetX + drag.card.offsetWidth / 2,
+						event.clientY - drag.offsetY + drag.card.offsetHeight / 2
+					)
+						?.classList.add("stay-drop-target");
+				}
+			}else{
+				drag.marker.hidden = !overHand;
+				if(overHand){
+					scheduleHandPlaceholder(drag.marker, drag, event.clientX, event.clientY);
+				}
 			}
 		}
 	};
@@ -895,6 +1394,9 @@ function enablePileDragging(element, source){
 	};
 	const cleanup = () => {
 		clearTimeout(drag.reorderTimer);
+		if(drag.scrollFrame){
+			cancelAnimationFrame(drag.scrollFrame);
+		}
 		drag.ghost?.remove();
 		drag.marker?.remove();
 		drag = null;
@@ -906,14 +1408,23 @@ function enablePileDragging(element, source){
 		}
 		const wasDragging = drag.dragging;
 		const overHand = wasDragging && isInsideHand(event.clientX, event.clientY);
-		if(overHand){
+		if(overHand && handOrganizeMode !== "stay"){
 			clearTimeout(drag.reorderTimer);
 			updateHandPlaceholder(drag.marker, event.clientX, event.clientY);
 		}
-		const insertionIndex = overHand
+		const stayTargetIndex = overHand && handOrganizeMode === "stay"
+			? Number(findClosestStayGap(
+				event.clientX - drag.offsetX + drag.card.offsetWidth / 2,
+				event.clientY - drag.offsetY + drag.card.offsetHeight / 2
+			)?.dataset.stayIndex)
+			: null;
+		const insertionIndex = overHand && handOrganizeMode !== "stay"
 			? Array.from(handCards.children).indexOf(drag.marker)
 			: null;
 		cleanup();
+		handCards.querySelectorAll(".stay-drop-target").forEach(item =>
+			item.classList.remove("stay-drop-target")
+		);
 		if(!wasDragging){
 			return;
 		}
@@ -921,7 +1432,10 @@ function enablePileDragging(element, source){
 		setTimeout(() => {
 			suppressPileClick = false;
 		}, 0);
-		if(overHand && insertionIndex !== null && insertionIndex >= 0){
+		if(overHand && handOrganizeMode === "stay" &&
+			Number.isInteger(stayTargetIndex)){
+			void drawFrom(source, { stayIndex: stayTargetIndex });
+		}else if(overHand && insertionIndex !== null && insertionIndex >= 0){
 			void drawFrom(source, insertionIndex);
 		}
 	};
@@ -930,6 +1444,9 @@ function enablePileDragging(element, source){
 			return;
 		}
 		cleanup();
+		handCards.querySelectorAll(".stay-drop-target").forEach(item =>
+			item.classList.remove("stay-drop-target")
+		);
 	};
 
 	element.addEventListener("pointerdown", event => {
@@ -949,6 +1466,7 @@ function enablePileDragging(element, source){
 			offsetX: event.clientX - rect.left,
 			offsetY: event.clientY - rect.top,
 			id: event.pointerId,
+			pointerY: event.clientY,
 			card,
 			dragging: false,
 			ghost: null,
@@ -1098,21 +1616,17 @@ function moveHandCardToIndex(cardId, targetIndex){
 }
 
 function renderCurrentGame(){
+	const scrollX = window.scrollX;
+	const scrollY = window.scrollY;
 	if(mode === "online"){
 		renderOnlineGame();
 	}else if(localGame){
 		renderLocalGame();
 	}
+	requestAnimationFrame(() => window.scrollTo(scrollX, scrollY));
 }
 
 function showTurnDialog(){
-	$("#scoreBoard").hidden = true;
-	if($("#howToPlayDialog").open){
-		$("#howToPlayDialog").close();
-	}
-	if(decisionDialog.open && !roomEndedDialogOpen){
-		$("#decisionDeny").click();
-	}
 	const dialog = $("#turnDialog");
 	if(!dialog.open){
 		dialog.showModal();
@@ -1120,6 +1634,77 @@ function showTurnDialog(){
 	$("#turnDialogPlay").focus();
 }
 
+function stayColumnCount(){
+	const main = handCards.closest("main");
+	const mainStyle = main && getComputedStyle(main);
+	const availableWidth = handCards.clientWidth || (main
+		? main.clientWidth -
+			parseFloat(mainStyle.paddingLeft) - parseFloat(mainStyle.paddingRight)
+		: window.innerWidth);
+	const probe = document.createElement("div");
+	probe.className = "hand-drop-slot hand-drop-slot-stay";
+	probe.style.position = "absolute";
+	probe.style.visibility = "hidden";
+	document.body.appendChild(probe);
+	const cardWidth = probe.getBoundingClientRect().width;
+	probe.remove();
+	const gap = parseFloat(getComputedStyle(handCards).columnGap) || 8;
+	return Math.max(1, Math.floor((availableWidth + gap) / (cardWidth + gap)));
+}
+
+function ensureStayLayout(hand){
+	const validIds = new Set(hand.map(card => card.id));
+	let layout = handStayLayout.map(item =>
+		item === "gap" || validIds.has(item) ? item : "gap"
+	);
+	const seenIds = new Set();
+	layout = layout.map(item => {
+		if(item === "gap"){
+			return item;
+		}
+		if(seenIds.has(item)){
+			return "gap";
+		}
+		seenIds.add(item);
+		return item;
+	});
+	const layoutIds = new Set(layout.filter(item => item !== "gap"));
+	while(layout.length && layout.at(-1) === "gap"){
+		layout.pop();
+	}
+	for(const card of hand){
+		if(layoutIds.has(card.id)){
+			continue;
+		}
+		layout.push(card.id);
+		layoutIds.add(card.id);
+	}
+	const columns = stayColumnCount();
+	const lastCardPosition = layout.map(item => item !== "gap").lastIndexOf(true);
+	layout = layout.slice(0, lastCardPosition + 1);
+	for(let row = Math.ceil(layout.length / columns) - 1; row >= 0; row--){
+		const start = row * columns;
+		const rowItems = layout.slice(start, start + columns);
+		if(rowItems.length === columns && rowItems.every(item => item === "gap")){
+			layout.splice(start, columns);
+		}
+	}
+	while(layout.length && layout.at(-1) === "gap"){
+		layout.pop();
+	}
+	while(layout.length % columns !== 0){
+		layout.push("gap");
+	}
+	layout.push(...Array.from({ length: columns }, () => "gap"));
+	if(selectedStayGapIndex !== null && layout[selectedStayGapIndex] !== "gap"){
+		selectedStayGapIndex = null;
+	}
+	handStayLayout = layout;
+	if(activeHandStayLayoutKey !== null){
+		handStayLayouts[activeHandStayLayoutKey] = handStayLayout;
+	}
+	return layout;
+}
 function renderGameTable(game, hand, canAct, canDraw, hasDrawn, canSeeHand){
 	$("#roundLabel").textContent = "Round " + game.round +
 		(game.round === 14 ? " (last round)" : "");
@@ -1195,89 +1780,113 @@ function renderGameTable(game, hand, canAct, canDraw, hasDrawn, canSeeHand){
 				Number.isInteger(position) && position > 0 && position < shownHand.length
 			);
 			const enabled = canAct && hasDrawn && !pendingAction;
-			const groups = findAdjacentMeldGroups(
-				shownHand,
-				game.round,
-				game.useTwosWild
-			);
-			const groupByIndex = new Map();
-			groups.forEach((group, groupIndex) => {
-				for(let index = group.start; index < group.end; index++){
-					groupByIndex.set(index, {
-						type: group.type,
-						start: index === group.start,
-						end: index === group.end - 1,
-						groupIndex
-					});
-				}
-			});
-			for(let index = 0; index <= shownHand.length; index++){
-				for(const [gapIndex, position] of handGapPositions.entries()){
-					if(position !== index){
-						continue;
-					}
-					const slot = document.createElement("div");
-					slot.className = "hand-drop-slot";
-					slot.setAttribute("role", "button");
-					slot.setAttribute("tabindex", "0");
-					slot.setAttribute("aria-label", "Remove organizing space");
-					slot.title = "Remove";
-					const removeGap = event => {
-						event.preventDefault();
-						event.stopPropagation();
-						handGapPositions.splice(gapIndex, 1);
-						renderCurrentGame();
-					};
-					slot.addEventListener("click", removeGap);
-					slot.addEventListener("keydown", event => {
-						if(event.key === "Enter" || event.key === " "){
-							removeGap(event);
+			const meldByCardId = new Map();
+			const addMeldGroups = cards => {
+				findAdjacentMeldGroups(cards, game.round, game.useTwosWild)
+					.forEach(group => {
+						for(let index = group.start; index < group.end; index++){
+							meldByCardId.set(cards[index].id, {
+								type: group.type,
+								start: index === group.start,
+								end: index === group.end - 1
+							});
 						}
 					});
-					handCards.appendChild(slot);
-				}
-				if(index === shownHand.length){
-					break;
-				}
-				const card = shownHand[index];
-				const element = drawCardElement(card, index, enabled, true);
-				const meld = groupByIndex.get(index);
-				if(meld){
-					element.classList.add("meld-card", "meld-" + meld.type);
-					if(meld.start){
-						element.classList.add("meld-start");
-					}
-					if(meld.end){
-						element.classList.add("meld-end");
-					}
-					element.dataset.meldGroup = String(meld.groupIndex + 1);
-					element.title = "Part of a " + meld.type;
-					const accessibleLabel = element.getAttribute("aria-label");
-					if(accessibleLabel){
-						element.setAttribute(
-							"aria-label",
-							accessibleLabel + ", part of a " + meld.type
-						);
-					}
-					if(meld.start){
-						const indicator = document.createElement("span");
-						indicator.className = "card-meld-indicator";
-						indicator.textContent = meld.type.toUpperCase();
-						element.appendChild(indicator);
+			};
+			if(handOrganizeMode === "stay"){
+				handCards.classList.add("stay-mode");
+				const layout = ensureStayLayout(shownHand);
+				const cardsById = new Map(shownHand.map(card => [card.id, card]));
+				let adjacentCards = [];
+				const addAdjacentMeldGroups = () => {
+					addMeldGroups(adjacentCards);
+					adjacentCards = [];
+				};
+				for(const item of layout){
+					if(item === "gap"){
+						addAdjacentMeldGroups();
+					}else{
+						const card = cardsById.get(item);
+						if(card){
+							adjacentCards.push(card);
+						}
 					}
 				}
-				handCards.appendChild(element);
-			}
-			for(let index = 0; index < 3; index++){
-				const slot = document.createElement("div");
-				slot.className = "hand-drop-slot hand-drop-slot-temporary hand-drop-slot-reserved";
-				slot.setAttribute("aria-hidden", "true");
-				handCards.appendChild(slot);
+				addAdjacentMeldGroups();
+				layout.forEach((item, stayIndex) => {
+					if(item === "gap"){
+						const slot = document.createElement("div");
+						slot.className = "hand-drop-slot hand-drop-slot-stay";
+						if(stayIndex === selectedStayGapIndex){
+							slot.classList.add("selected");
+						}
+						slot.dataset.stayIndex = String(stayIndex);
+						slot.setAttribute("role", "button");
+						slot.setAttribute("tabindex", "0");
+						slot.setAttribute("aria-label", "Select organizing space to swap");
+						slot.title = "Organizing space";
+						slot.addEventListener("click", event => {
+							if(!activeHandDrag){
+								event.stopPropagation();
+								selectStayGapForSwap(stayIndex);
+							}
+						});
+						slot.addEventListener("keydown", event => {
+							if(event.key === "Enter" || event.key === " "){
+								event.preventDefault();
+								selectStayGapForSwap(stayIndex);
+							}
+						});
+						enableDashSlotDragging(slot);
+						handCards.appendChild(slot);
+						return;
+					}
+					const card = cardsById.get(item);
+					if(!card){
+						return;
+					}
+					const handIndex = shownHand.findIndex(candidate => candidate.id === card.id);
+					const element = drawCardElement(card, handIndex, enabled, true);
+					element.dataset.stayIndex = String(stayIndex);
+					const meld = meldByCardId.get(card.id);
+					if(meld){
+						element.classList.add("meld-card", "meld-" + meld.type);
+						if(meld.start) element.classList.add("meld-start");
+						if(meld.end) element.classList.add("meld-end");
+						if(meld.start){
+							const indicator = document.createElement("span");
+							indicator.className = "card-meld-indicator";
+							indicator.textContent = meld.type === "run" ? "RUN" : "SET";
+							element.appendChild(indicator);
+						}
+					}
+					handCards.appendChild(element);
+				});
+			}else{
+				handCards.classList.remove("stay-mode");
+				addMeldGroups(shownHand);
+				shownHand.forEach((card, index) => {
+					const element = drawCardElement(card, index, enabled, true);
+					const meld = meldByCardId.get(card.id);
+					if(meld){
+						element.classList.add("meld-card", "meld-" + meld.type);
+						if(meld.start) element.classList.add("meld-start");
+						if(meld.end) element.classList.add("meld-end");
+						if(meld.start){
+							const indicator = document.createElement("span");
+							indicator.className = "card-meld-indicator";
+							indicator.textContent = meld.type === "run" ? "RUN" : "SET";
+							element.appendChild(indicator);
+						}
+					}
+					handCards.appendChild(element);
+				});
 			}
 		}
 	}
 	$("#turnActions").replaceChildren();
-	if(mode === "local" && !handVisible && !localGame?.solo && game.status === "playing"){
+	if(mode === "local" && !handVisible && !localGame?.solo &&
+		!currentLocalPlayer()?.isBot && game.status === "playing"){
 		const player = currentLocalPlayer();
 		const reveal = document.createElement("button");
 		reveal.type = "button";
@@ -1301,6 +1910,24 @@ function renderLocalGame(){
 	if(!localGame){
 		return;
 	}
+	const roundChanged = renderedLocalRound !== null &&
+		renderedLocalRound !== localGame.round;
+	if(roundChanged){
+		resetHandStayLayouts();
+		handGapPositions = [];
+	}
+	renderedLocalRound = localGame.round;
+	const current = currentLocalPlayer();
+	handOrganizeMode = localGame.solo
+		? defaultHandOrganizeMode
+		: handOrganizeModes[current.id] || defaultHandOrganizeMode;
+	$("#handOrganizeMode").checked = handOrganizeMode === "stay";
+	if(handOrganizeMode === "stay"){
+		handCards.classList.add("stay-mode");
+	}else{
+		handCards.classList.remove("stay-mode");
+	}
+	activateHandStayLayout("local:" + current.id);
 	persistLocalGame();
 	startDiv.hidden = true;
 	gameBoard.hidden = false;
@@ -1309,7 +1936,6 @@ function renderLocalGame(){
 	$("#leaveOnline").hidden = true;
 	$("#showScores").hidden = false;
 	updateSoloTimer();
-	const current = currentLocalPlayer();
 	if(localGame.status === "complete"){
 		$("#lastTurnBanner").hidden = true;
 		const winners = localGame.players.filter(player => localGame.winners.includes(player.id));
@@ -1326,7 +1952,10 @@ function renderLocalGame(){
 		return;
 	}
 	$("#playAgain").hidden = true;
-	if(!handVisible && !localGame.solo){
+	if(current.isBot){
+		handVisible = false;
+		infoDiv.textContent = current.name + " is thinking.";
+	}else if(!handVisible && !localGame.solo){
 		infoDiv.textContent = "Pass the device to " + current.name + ", then reveal their hand.";
 	}
 	renderGameTable(
@@ -1347,11 +1976,56 @@ function renderLocalGame(){
 				localGame.players.find(player => player.laidDown)?.name
 		},
 		current.hand,
-		localGame.solo || handVisible,
+		!current.isBot && (localGame.solo || handVisible),
 		(localGame.solo || handVisible) && !localGame.hasDrawn,
 		localGame.hasDrawn,
-		localGame.solo || handVisible
+		!current.isBot && (localGame.solo || handVisible)
 	);
+	if(roundChanged && !localGame.solo){
+		renderScoreboard(localGame);
+		$("#scoreBoard").hidden = false;
+	}
+	if(current.isBot){
+		if($("#scoreBoard").hidden){
+			void runLocalBotTurns();
+		}
+	}
+}
+
+async function runLocalBotTurns(){
+	if(localBotTurnRunning){
+		return;
+	}
+	localBotTurnRunning = true;
+	let failed = false;
+	try{
+		while(localGame?.status === "playing" &&
+			$("#scoreBoard").hidden &&
+			currentLocalPlayer()?.isBot){
+			const bot = currentLocalPlayer();
+			await new Promise(resolve => setTimeout(resolve, 450));
+			if(localGame?.status !== "playing" ||
+				!$("#scoreBoard").hidden ||
+				currentLocalPlayer()?.id !== bot.id){
+				break;
+			}
+			try{
+				playBotTurn(localGame, bot.id);
+			}catch(error){
+				failed = true;
+				showNotice("The bot could not complete its turn: " + error.message);
+				break;
+			}
+			renderLocalGame();
+		}
+	}finally{
+		localBotTurnRunning = false;
+		if(!failed && localGame?.status === "playing" &&
+			$("#scoreBoard").hidden &&
+			currentLocalPlayer()?.isBot){
+			setTimeout(() => void runLocalBotTurns(), 0);
+		}
+	}
 }
 
 function renderOnlineGame(){
@@ -1364,6 +2038,20 @@ function renderOnlineGame(){
 	const game = onlineState.game;
 	const ownPlayer = game.players.find(player => player.id === onlineCredentials.playerId);
 	const currentPlayer = game.players.find(player => player.id === game.currentPlayerId);
+	const onlineRoundChanged = renderedOnlineRound !== null &&
+		renderedOnlineRound !== game.round;
+	const onlineLayoutKey = "online:" + onlineCredentials.playerId;
+	if(onlineRoundChanged){
+		handGapPositions = [];
+		if(activeHandStayLayoutKey === onlineLayoutKey){
+			handStayLayout = [];
+			handStayLayouts[onlineLayoutKey] = handStayLayout;
+		}else{
+			handStayLayouts[onlineLayoutKey] = [];
+		}
+	}
+	renderedOnlineRound = game.round;
+	activateHandStayLayout(onlineLayoutKey);
 	$("#onlinePlayers").hidden = false;
 	$("#onlinePlayers").replaceChildren();
 	for(const player of game.players){
@@ -1376,9 +2064,11 @@ function renderOnlineGame(){
 			badge.classList.add("laid-down");
 		}
 		const playerLabel = document.createElement("span");
-		playerLabel.textContent = player.name + " · " + player.score + " points";
+		playerLabel.textContent = player.name + " · " + player.score + " points" +
+			(player.isBot ? " · Bot (" + player.botSkill + ")" : "");
 		badge.appendChild(playerLabel);
-		if(onlineCredentials.isHost && player.id !== onlineCredentials.playerId){
+		if(onlineCredentials.isHost && !player.isBot &&
+			player.id !== onlineCredentials.playerId){
 			const kick = document.createElement("button");
 			kick.className = "kick-player";
 			kick.type = "button";
@@ -1423,7 +2113,9 @@ function renderOnlineGame(){
 	}
 	const hasDrawn = game.hasDrawn && game.currentPlayerId === onlineCredentials.playerId;
 	if(game.currentPlayerId !== onlineCredentials.playerId){
-		infoDiv.textContent = currentPlayer.name + "'s turn.";
+		infoDiv.textContent = currentPlayer.isBot
+			? currentPlayer.name + " is thinking."
+			: currentPlayer.name + "'s turn.";
 	}
 	renderGameTable(
 		{
@@ -1514,7 +2206,9 @@ function renderScoreboard(game){
 			previousScore = player.score;
 		}
 		const name = document.createElement("td");
-		name.textContent = player.name;
+		name.textContent = player.name + (player.isBot
+			? " (Bot — " + player.botSkill + ")"
+			: "");
 		row.appendChild(name);
 		if(isSolo){
 			const turns = document.createElement("td");
@@ -1605,9 +2299,13 @@ async function drawFrom(source, insertionIndex = null){
 
 async function drawCardIntoHand(source, insertionIndex){
 	if(mode === "online"){
-		pendingDrawIndex = insertionIndex;
+		pendingDrawIndex = Number.isInteger(insertionIndex) ? insertionIndex : null;
+		pendingDrawStayIndex = Number.isInteger(insertionIndex?.stayIndex)
+			? insertionIndex.stayIndex
+			: null;
 		if(!sendOnline({ type: "draw", source })){
 			pendingDrawIndex = null;
+			pendingDrawStayIndex = null;
 		}
 		return;
 	}
@@ -1616,12 +2314,17 @@ async function drawCardIntoHand(source, insertionIndex){
 	}
 	try{
 		const card = drawCard(localGame, currentLocalPlayer().id, source);
-		if(insertionIndex !== null){
+		if(Number.isInteger(insertionIndex)){
 			const hand = currentLocalPlayer().hand;
 			hand.splice(hand.indexOf(card), 1);
 			hand.splice(Math.max(0, Math.min(insertionIndex, hand.length)), 0, card);
+		}else if(Number.isInteger(insertionIndex?.stayIndex) &&
+			handStayLayout[insertionIndex.stayIndex] === "gap"){
+			handStayLayout[insertionIndex.stayIndex] = card.id;
 		}
 		selectedCardId = null;
+		reorderSelectedCardId = null;
+		selectedStayGapIndex = null;
 		renderLocalGame();
 	}catch(error){
 		showNotice(error.message);
@@ -1662,6 +2365,8 @@ async function discardCard(cardId){
 	}
 	const layDown = choice.layDown;
 	selectedCardId = null;
+	reorderSelectedCardId = null;
+	selectedStayGapIndex = null;
 	if(mode === "online"){
 		sendOnline({ type: "discard", cardId, layDown });
 		return;
@@ -1682,11 +2387,9 @@ async function discardCard(cardId){
 			void submitGlobalScore(soloPlayer, localGame);
 		}
 		renderLocalGame();
-		if(localGame.status === "complete" || roundAdvanced){
-			if(roundAdvanced && localGame.solo){
-				pauseSoloTimer(localGame);
-				renderLocalGame();
-			}
+		if(roundAdvanced && localGame.solo){
+			pauseSoloTimer(localGame);
+			renderLocalGame();
 			renderScoreboard(localGame);
 			$("#scoreBoard").hidden = false;
 		}
@@ -1780,7 +2483,11 @@ function sendOnline(message){
 	}
 	pendingAction = true;
 	socket.send(JSON.stringify(message));
-	renderOnlineGame();
+	if(onlineState?.room && !onlineState.game){
+		renderRoomLobby();
+	}else{
+		renderOnlineGame();
+	}
 	return true;
 }
 
@@ -1821,6 +2528,27 @@ function renderRoomLobby(){
 		}
 		$("#lobbyPlayers").appendChild(item);
 	}
+	const roomBots = onlineState.room.bots || [];
+	$("#lobbyBots").replaceChildren();
+	$("#lobbyBots").hidden = roomBots.length === 0;
+	for(const bot of roomBots){
+		const item = document.createElement("li");
+		item.textContent = bot.name + " · Bot (" + bot.botSkill + ")";
+		$("#lobbyBots").appendChild(item);
+	}
+	const canEditBots = Boolean(
+		onlineCredentials?.isHost && onlineState.room.status === "waiting"
+	);
+	$("#onlineBotSetup").hidden = !canEditBots;
+	renderBotEditors($("#onlineBotEditors"), onlineState.room.bots || [], bots => {
+		sendOnline({
+			type: "bots",
+			bots: bots.map(({ name, botSkill }) => ({ name, botSkill }))
+		});
+	});
+	$("#addOnlineBot").disabled = pendingAction ||
+		(onlineState.room.bots || []).length >= MAX_BOTS ||
+		onlineState.room.players.length + (onlineState.room.bots || []).length >= MAX_PLAYERS;
 	$("#lobbyStatus").textContent = onlineState.room.useTwosWild ? "2s are wild." : "2s are not wild.";
 	const canChangeRoomSettings = Boolean(
 		onlineCredentials?.isHost && onlineState.room.status === "waiting"
@@ -1832,7 +2560,7 @@ function renderRoomLobby(){
 	$("#startRoom").hidden = !(
 		onlineCredentials?.isHost &&
 		onlineState.room.status === "waiting" &&
-		onlineState.room.players.length >= 2
+		onlineState.room.players.length + (onlineState.room.bots || []).length >= 2
 	);
 	infoDiv.textContent = "Online room " + onlineState.room.code + " — waiting for the host to start.";
 }
@@ -1896,10 +2624,15 @@ function connectRoom(){
 		if(message.type === "error"){
 			pendingAction = false;
 			pendingDrawIndex = null;
+			pendingDrawStayIndex = null;
 			manuallyLeavingRoom = false;
 			showNotice(message.message);
 			if(onlineState?.room){
-				onlineState.game && renderOnlineGame();
+				if(onlineState.game){
+					renderOnlineGame();
+				}else{
+					renderRoomLobby();
+				}
 			}
 			return;
 		}
@@ -1918,19 +2651,33 @@ function connectRoom(){
 		const previousGame = onlineState?.game;
 		pendingAction = false;
 		reconnectAttempts = 0;
-		if(pendingDrawIndex !== null && message.game && onlineState?.game){
+		if((pendingDrawIndex !== null || pendingDrawStayIndex !== null) &&
+			message.game && onlineState?.game){
 			const previousOrder = getDisplayedHand(onlineState.game.hand).map(card => card.id);
 			const previousIds = new Set(previousOrder);
 			const drawnCard = message.game.hand.find(card => !previousIds.has(card.id));
 			if(drawnCard){
-				previousOrder.splice(
-					Math.max(0, Math.min(pendingDrawIndex, previousOrder.length)),
-					0,
-					drawnCard.id
-				);
-				handOrder = previousOrder;
+				if(pendingDrawStayIndex !== null &&
+					handStayLayout[pendingDrawStayIndex] === "gap"){
+					handStayLayout[pendingDrawStayIndex] = drawnCard.id;
+				}else if(pendingDrawIndex !== null){
+					previousOrder.splice(
+						Math.max(0, Math.min(pendingDrawIndex, previousOrder.length)),
+						0,
+						drawnCard.id
+					);
+					handOrder = previousOrder;
+				}
 			}
 			pendingDrawIndex = null;
+			pendingDrawStayIndex = null;
+		}
+		if(message.game?.hasDrawn &&
+			!previousGame?.hasDrawn &&
+			message.game.currentPlayerId === onlineCredentials?.playerId){
+			selectedCardId = null;
+			reorderSelectedCardId = null;
+			selectedStayGapIndex = null;
 		}
 		onlineState = message;
 		if(!message.room){
@@ -2168,6 +2915,8 @@ function returnToSetup(){
 	handVisible = false;
 	selectedCardId = null;
 	handGapPositions = [];
+	resetHandStayLayouts();
+	renderedLocalRound = null;
 	lastTurnPromptKey = null;
 	if($("#turnDialog").open){
 		$("#turnDialog").close();
@@ -2185,8 +2934,67 @@ function returnToSetup(){
 
 function initialize(){
 	renderPlayerNames();
+	updateLocalBotEditors([]);
 	refreshLocalScores();
 	void loadGlobalScores();
+	try{
+		const savedMode = localStorage.getItem("handOrganizeMode");
+		defaultHandOrganizeMode = savedMode === "stay" ? "stay" : "slide";
+	}catch(error){
+		defaultHandOrganizeMode = "slide";
+	}
+	try{
+		const savedModes = JSON.parse(localStorage.getItem("handOrganizeModes") || "{}");
+		handOrganizeModes = savedModes && typeof savedModes === "object" &&
+			!Array.isArray(savedModes)
+			? Object.fromEntries(
+				Object.entries(savedModes).filter(([, savedMode]) =>
+					isHandOrganizeMode(savedMode)
+				)
+			)
+			: {};
+	}catch(error){
+		handOrganizeModes = {};
+	}
+	handOrganizeMode = defaultHandOrganizeMode;
+	try{
+		const savedStayLayout = JSON.parse(
+			localStorage.getItem(handStayLayoutStorageKey) || "[]"
+		);
+		if(Array.isArray(savedStayLayout)){
+			legacyHandStayLayout = savedStayLayout;
+			handStayLayouts = {};
+		}else if(savedStayLayout && typeof savedStayLayout === "object"){
+			handStayLayouts = Object.fromEntries(
+				Object.entries(savedStayLayout).filter(([, layout]) => Array.isArray(layout))
+			);
+		}else{
+			handStayLayouts = {};
+		}
+	}catch(error){
+		handStayLayouts = {};
+	}
+	$("#handOrganizeMode").checked = handOrganizeMode === "stay";
+	$("#handOrganizeMode").addEventListener("change", () => {
+		handOrganizeMode = $("#handOrganizeMode").checked ? "stay" : "slide";
+		selectedStayGapIndex = null;
+		reorderSelectedCardId = null;
+		const current = mode === "local" ? currentLocalPlayer() : null;
+		if(localGame && !localGame.solo && localGame.players.length > 1 && current){
+			handOrganizeModes[current.id] = handOrganizeMode;
+		}else{
+			defaultHandOrganizeMode = handOrganizeMode;
+		}
+		saveHandOrganizeModes();
+		if(handOrganizeMode === "stay"){
+			handCards.classList.add("stay-mode");
+		}else{
+			handCards.classList.remove("stay-mode");
+			handGapPositions = [];
+		}
+		clearHandDropSlots();
+		renderCurrentGame();
+	});
 	for(const quote of CHAT_QUOTES){
 		const option = document.createElement("option");
 		option.value = quote;
@@ -2203,7 +3011,31 @@ function initialize(){
 			setMode(button.dataset.mode);
 		});
 	});
-	$("#playerCount").addEventListener("change", renderPlayerNames);
+	$("#playerCount").addEventListener("change", () => {
+		renderPlayerNames();
+		$("#addLocalBot").disabled = localBotConfigs.length >= MAX_BOTS ||
+			localBotConfigs.length + Number($("#playerCount").value) >= MAX_PLAYERS;
+	});
+	$("#addLocalBot").addEventListener("click", () => {
+		if(localBotConfigs.length + Number($("#playerCount").value) >= MAX_PLAYERS){
+			showNotice("A game can have up to 20 players, including bots.");
+			return;
+		}
+		updateLocalBotEditors([...localBotConfigs, createBotConfig(localBotConfigs)]);
+	});
+	$("#addOnlineBot").addEventListener("click", () => {
+		const bots = onlineState?.room?.bots || [];
+		if(!onlineCredentials?.isHost || bots.length >= MAX_BOTS ||
+			bots.length + onlineState.room.players.length >= MAX_PLAYERS){
+			showNotice("The host can add up to 3 bots, with no more than 20 room players total.");
+			return;
+		}
+		const updated = [...readBotEditors($("#onlineBotEditors"), bots), createBotConfig(bots)];
+		sendOnline({
+			type: "bots",
+			bots: updated.map(({ name, botSkill }) => ({ name, botSkill }))
+		});
+	});
 	$("#leaderboardWildFilter").addEventListener("change", () => {
 		renderScoreboards({
 			local: readLocalScores(),
@@ -2221,16 +3053,27 @@ function initialize(){
 	$("#startLocal").addEventListener("click", () => {
 		const count = Number($("#playerCount").value);
 		const names = Array.from($("#playerNames").querySelectorAll("input"), input => input.value.trim());
-		if(!Number.isInteger(count) || count < 1 || count > 20 || names.length !== count ||
-			names.some(name => !name) || new Set(names.map(name => name.toLocaleLowerCase())).size !== names.length){
-			showNotice("Enter a unique name for every player (1–20 players).");
+		const allNames = [...names, ...localBotConfigs.map(bot => bot.name.trim())];
+		if(!Number.isInteger(count) || count < 1 || count > 20 ||
+			count + localBotConfigs.length > 20 || names.length !== count ||
+			allNames.some(name => !name) ||
+			new Set(allNames.map(name => name.toLocaleLowerCase())).size !== allNames.length){
+			showNotice("Enter a unique name for every player and bot (up to 20 total).");
 			return;
 		}
 		try{
 			localGame = createGame(
-				names.map(name => ({ id: createToken(8), name })),
+				[
+					...names.map(name => ({ id: createToken(8), name })),
+					...localBotConfigs.map(bot => ({
+						id: bot.id || createToken(8),
+						name: bot.name.trim(),
+						isBot: true,
+						botSkill: bot.botSkill
+					}))
+				],
 				$("#twosWild").checked,
-				names.length === 1
+				names.length === 1 && localBotConfigs.length === 0
 			);
 		}catch(error){
 			showNotice(error.message);
@@ -2240,6 +3083,9 @@ function initialize(){
 		handVisible = localGame.solo;
 		selectedCardId = null;
 		handGapPositions = [];
+		resetHandStayLayouts();
+		legacyHandStayLayout = null;
+		renderedLocalRound = null;
 		reorderSelectedCardId = null;
 		handOrder = [];
 		submittedSoloScore = false;
@@ -2301,7 +3147,7 @@ function initialize(){
 			}
 		}
 	});
-	$("#turnDialog").addEventListener("click", () => {
+	$("#turnDialogPlay").addEventListener("click", () => {
 		$("#turnDialog").close();
 	});
 	document.addEventListener("pointerdown", event => {
@@ -2323,9 +3169,6 @@ function initialize(){
 		}
 		if(outsidePopup($("#howToPlayDialog"))){
 			$("#howToPlayDialog").close();
-		}
-		if(outsidePopup($("#turnDialog"))){
-			$("#turnDialog").close();
 		}
 		if(outsidePopup(decisionDialog)){
 			if(roomEndedDialogOpen){
