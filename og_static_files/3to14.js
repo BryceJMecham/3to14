@@ -1153,6 +1153,7 @@ function enableDashSlotDragging(slot){
 		};
 		document.addEventListener("pointermove", handleMove);
 		document.addEventListener("pointerup", handleUp);
+		document.addEventListener("pointercancel", handleCancel);
 	});
 	const handleMove = event => {
 		if(!drag || drag.id !== event.pointerId){
@@ -1191,6 +1192,7 @@ function enableDashSlotDragging(slot){
 		slot.classList.remove("drag-placeholder");
 		document.removeEventListener("pointermove", handleMove);
 		document.removeEventListener("pointerup", handleUp);
+		document.removeEventListener("pointercancel", handleCancel);
 		drag = null;
 		if(!wasDragging){
 			return;
@@ -1224,6 +1226,23 @@ function enableDashSlotDragging(slot){
 		ghost?.remove();
 		persistLocalGame();
 		renderCurrentGame();
+	};
+	const handleCancel = event => {
+		if(!drag || drag.id !== event.pointerId){
+			return;
+		}
+		if(drag.scrollFrame){
+			cancelAnimationFrame(drag.scrollFrame);
+		}
+		drag.ghost?.remove();
+		slot.classList.remove("drag-placeholder");
+		handCards.querySelectorAll(".stay-drop-target").forEach(item =>
+			item.classList.remove("stay-drop-target")
+		);
+		document.removeEventListener("pointermove", handleMove);
+		document.removeEventListener("pointerup", handleUp);
+		document.removeEventListener("pointercancel", handleCancel);
+		drag = null;
 	};
 }
 
@@ -1618,12 +1637,28 @@ function moveHandCardToIndex(cardId, targetIndex){
 function renderCurrentGame(){
 	const scrollX = window.scrollX;
 	const scrollY = window.scrollY;
+	const focusedCardId = handCards.contains(document.activeElement)
+		? document.activeElement.closest(".hand-card")?.dataset.cardId
+		: null;
+	if(handCards.contains(document.activeElement)){
+		document.activeElement.blur();
+	}
 	if(mode === "online"){
 		renderOnlineGame();
 	}else if(localGame){
 		renderLocalGame();
 	}
-	requestAnimationFrame(() => window.scrollTo(scrollX, scrollY));
+	if(focusedCardId){
+		Array.from(handCards.querySelectorAll(".hand-card"))
+			.find(card => card.dataset.cardId === focusedCardId)
+			?.focus({ preventScroll: true });
+	}
+	const restoreScroll = () => window.scrollTo(scrollX, scrollY);
+	restoreScroll();
+	requestAnimationFrame(() => {
+		restoreScroll();
+		requestAnimationFrame(restoreScroll);
+	});
 }
 
 function showTurnDialog(){
@@ -1837,7 +1872,6 @@ function renderGameTable(game, hand, canAct, canDraw, hasDrawn, canSeeHand){
 								selectStayGapForSwap(stayIndex);
 							}
 						});
-						enableDashSlotDragging(slot);
 						handCards.appendChild(slot);
 						return;
 					}
@@ -2325,7 +2359,7 @@ async function drawCardIntoHand(source, insertionIndex){
 		selectedCardId = null;
 		reorderSelectedCardId = null;
 		selectedStayGapIndex = null;
-		renderLocalGame();
+		renderCurrentGame();
 	}catch(error){
 		showNotice(error.message);
 	}
@@ -2386,16 +2420,16 @@ async function discardCard(cardId){
 			saveSoloScore(soloPlayer, localGame);
 			void submitGlobalScore(soloPlayer, localGame);
 		}
-		renderLocalGame();
+		renderCurrentGame();
 		if(roundAdvanced && localGame.solo){
 			pauseSoloTimer(localGame);
-			renderLocalGame();
+			renderCurrentGame();
 			renderScoreboard(localGame);
 			$("#scoreBoard").hidden = false;
 		}
 	}catch(error){
 		showNotice(error.message);
-		renderLocalGame();
+		renderCurrentGame();
 	}
 }
 
@@ -2689,7 +2723,7 @@ function connectRoom(){
 			renderRoomLobby();
 		}else{
 			roomLobby.hidden = true;
-			renderOnlineGame();
+			renderCurrentGame();
 			const gameCompletedNow = message.game?.status === "complete" &&
 				(!previousGame || previousGame.status !== "complete");
 			const advancedRound = previousGame &&
