@@ -422,7 +422,7 @@ function restoreSavedLocalGame(){
 		handStayLayouts[restoredLayoutKey] = legacyHandStayLayout;
 		legacyHandStayLayout = null;
 	}
-	handVisible = game.solo;
+	handVisible = game.solo || hasSingleHumanWithBots(game);
 	selectedCardId = null;
 	handOrder = [];
 	$("#scoreBoard").hidden = true;
@@ -550,7 +550,8 @@ function updateLocalBotEditors(bots){
 	localBotConfigs = bots;
 	renderBotEditors($("#localBotEditors"), localBotConfigs, updateLocalBotEditors);
 	$("#addLocalBot").disabled = localBotConfigs.length >= MAX_BOTS ||
-		localBotConfigs.length + Number($("#playerCount").value) >= MAX_PLAYERS;
+		localBotConfigs.length + Number($("#playerCount").value) >= MAX_PLAYERS ||
+		Number($("#playerCount").value) !== 1;
 }
 
 function readLocalScores(){
@@ -728,6 +729,14 @@ async function submitGlobalScore(player, game){
 
 function currentLocalPlayer(){
 	return localGame?.players[localGame.currentIndex] || null;
+}
+
+function hasSingleHumanWithBots(game = localGame){
+	return Boolean(
+		game &&
+		game.players.filter(player => !player.isBot).length === 1 &&
+		game.players.some(player => player.isBot)
+	);
 }
 
 function drawCardElement(card, index, enabled, handCard = false){
@@ -1952,16 +1961,20 @@ function renderLocalGame(){
 	}
 	renderedLocalRound = localGame.round;
 	const current = currentLocalPlayer();
+	const singleHumanWithBots = hasSingleHumanWithBots(localGame);
+	const handPlayer = current.isBot && singleHumanWithBots
+		? localGame.players.find(player => !player.isBot)
+		: current;
 	handOrganizeMode = localGame.solo
 		? defaultHandOrganizeMode
-		: handOrganizeModes[current.id] || defaultHandOrganizeMode;
+		: handOrganizeModes[handPlayer.id] || defaultHandOrganizeMode;
 	$("#handOrganizeMode").checked = handOrganizeMode === "stay";
 	if(handOrganizeMode === "stay"){
 		handCards.classList.add("stay-mode");
 	}else{
 		handCards.classList.remove("stay-mode");
 	}
-	activateHandStayLayout("local:" + current.id);
+	activateHandStayLayout("local:" + handPlayer.id);
 	persistLocalGame();
 	startDiv.hidden = true;
 	gameBoard.hidden = false;
@@ -1987,7 +2000,9 @@ function renderLocalGame(){
 	}
 	$("#playAgain").hidden = true;
 	if(current.isBot){
-		handVisible = false;
+		if(!singleHumanWithBots){
+			handVisible = false;
+		}
 		infoDiv.textContent = current.name + " is thinking.";
 	}else if(!handVisible && !localGame.solo){
 		infoDiv.textContent = "Pass the device to " + current.name + ", then reveal their hand.";
@@ -2009,11 +2024,11 @@ function renderLocalGame(){
 				localGame.players.find(player => player.id === localGame.wentOutPlayerId)?.name ||
 				localGame.players.find(player => player.laidDown)?.name
 		},
-		current.hand,
+		handPlayer.hand,
 		!current.isBot && (localGame.solo || handVisible),
-		(localGame.solo || handVisible) && !localGame.hasDrawn,
+		!current.isBot && (localGame.solo || handVisible) && !localGame.hasDrawn,
 		localGame.hasDrawn,
-		!current.isBot && (localGame.solo || handVisible)
+		(!current.isBot && (localGame.solo || handVisible)) || singleHumanWithBots
 	);
 	if(roundChanged && !localGame.solo){
 		renderScoreboard(localGame);
@@ -2411,7 +2426,9 @@ async function discardCard(cardId){
 	try{
 		discardAndEndTurn(localGame, previousPlayerId, cardId, layDown);
 		const nextPlayerId = currentLocalPlayer()?.id;
-		handVisible = localGame.solo || nextPlayerId === previousPlayerId;
+		handVisible = localGame.solo ||
+			hasSingleHumanWithBots(localGame) ||
+			nextPlayerId === previousPlayerId;
 		const roundAdvanced = localGame.round !== previousRound;
 		if(localGame.status === "complete" && localGame.solo && !localGame.debugSkipped &&
 			!submittedSoloScore){
@@ -2583,7 +2600,11 @@ function renderRoomLobby(){
 	$("#addOnlineBot").disabled = pendingAction ||
 		(onlineState.room.bots || []).length >= MAX_BOTS ||
 		onlineState.room.players.length + (onlineState.room.bots || []).length >= MAX_PLAYERS;
-	$("#lobbyStatus").textContent = onlineState.room.useTwosWild ? "2s are wild." : "2s are not wild.";
+	$("#lobbyStatus").textContent =
+		(onlineState.room.useTwosWild ? "2s are wild." : "2s are not wild.") +
+		(onlineState.room.players.length < 2
+			? " At least two human players are required to start."
+			: "");
 	const canChangeRoomSettings = Boolean(
 		onlineCredentials?.isHost && onlineState.room.status === "waiting"
 	);
@@ -2594,7 +2615,7 @@ function renderRoomLobby(){
 	$("#startRoom").hidden = !(
 		onlineCredentials?.isHost &&
 		onlineState.room.status === "waiting" &&
-		onlineState.room.players.length + (onlineState.room.bots || []).length >= 2
+		onlineState.room.players.length >= 2
 	);
 	infoDiv.textContent = "Online room " + onlineState.room.code + " — waiting for the host to start.";
 }
@@ -3048,9 +3069,14 @@ function initialize(){
 	$("#playerCount").addEventListener("change", () => {
 		renderPlayerNames();
 		$("#addLocalBot").disabled = localBotConfigs.length >= MAX_BOTS ||
-			localBotConfigs.length + Number($("#playerCount").value) >= MAX_PLAYERS;
+			localBotConfigs.length + Number($("#playerCount").value) >= MAX_PLAYERS ||
+			Number($("#playerCount").value) !== 1;
 	});
 	$("#addLocalBot").addEventListener("click", () => {
+		if(Number($("#playerCount").value) !== 1){
+			showNotice("Local games with bots must have exactly one human player.");
+			return;
+		}
 		if(localBotConfigs.length + Number($("#playerCount").value) >= MAX_PLAYERS){
 			showNotice("A game can have up to 20 players, including bots.");
 			return;
@@ -3088,6 +3114,10 @@ function initialize(){
 		const count = Number($("#playerCount").value);
 		const names = Array.from($("#playerNames").querySelectorAll("input"), input => input.value.trim());
 		const allNames = [...names, ...localBotConfigs.map(bot => bot.name.trim())];
+		if(localBotConfigs.length > 0 && count !== 1){
+			showNotice("Local games with bots must have exactly one human player.");
+			return;
+		}
 		if(!Number.isInteger(count) || count < 1 || count > 20 ||
 			count + localBotConfigs.length > 20 || names.length !== count ||
 			allNames.some(name => !name) ||
@@ -3114,7 +3144,7 @@ function initialize(){
 			return;
 		}
 		mode = "local";
-		handVisible = localGame.solo;
+		handVisible = localGame.solo || hasSingleHumanWithBots(localGame);
 		selectedCardId = null;
 		handGapPositions = [];
 		resetHandStayLayouts();

@@ -337,8 +337,8 @@ export class MyDurableObject extends DurableObject {
 				if(player.id !== this.room.hostId || this.room.status !== "waiting"){
 					throw new Error("Only the host can start a waiting room.");
 				}
-				if(this.room.players.length + (this.room.bots || []).length < 2){
-					throw new Error("At least two players are required to start online play.");
+				if(this.room.players.length < 2){
+					throw new Error("At least two human players are required to start online play.");
 				}
 				this.room.game = createGame(
 					[
